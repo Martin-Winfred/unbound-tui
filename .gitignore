@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# Local design doc (kept out of version control by owner)
+/design.md
+
 # Editor/IDE
 # .idea/
 # .vscode/

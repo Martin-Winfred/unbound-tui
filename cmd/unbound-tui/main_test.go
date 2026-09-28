@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,7 +58,17 @@ func TestBootWarnsWhenIncludeMissing(t *testing.T) {
 }
 
 func TestRunRejectsBadFlag(t *testing.T) {
-	if err := run([]string{"-not-a-flag"}, &bytes.Buffer{}); err == nil {
+	if err := run([]string{"-not-a-flag"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("run with a bad flag = nil error, want error")
+	}
+}
+
+func TestRunVersionFlag(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"-version"}, &out, io.Discard); err != nil {
+		t.Fatalf("run -version: %v", err)
+	}
+	if !strings.Contains(out.String(), "unbound-tui") {
+		t.Errorf("version output = %q, want it to contain unbound-tui", out.String())
 	}
 }

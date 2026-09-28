@@ -18,8 +18,9 @@ import (
 
 // RootModel is the top-level tea.Model.
 type RootModel struct {
-	ctl domain.Controller
-	cfg *config.Manager
+	ctl     domain.Controller
+	cfg     *config.Manager
+	version string
 
 	zones       []domain.Zone
 	zoneCursor  int
@@ -44,9 +45,9 @@ type RootModel struct {
 }
 
 // NewRootModel builds the root model around its collaborators. The zones pane
-// starts focused.
-func NewRootModel(ctl domain.Controller, cfg *config.Manager) RootModel {
-	return RootModel{ctl: ctl, cfg: cfg, state: StateReady, zoneFocused: true}
+// starts focused. version is shown in the title.
+func NewRootModel(ctl domain.Controller, cfg *config.Manager, version string) RootModel {
+	return RootModel{ctl: ctl, cfg: cfg, version: version, state: StateReady, zoneFocused: true}
 }
 
 // Init loads the fragment model from disk.

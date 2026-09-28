@@ -365,6 +365,14 @@ func (m RootModel) statusLine(w int) string {
 	return fit(strings.Join(segs, th.dimStyle.Render(" · ")), w)
 }
 
+// titleText is the header line, including the version when known.
+func (m RootModel) titleText() string {
+	if m.version == "" {
+		return "unbound-tui"
+	}
+	return "unbound-tui " + m.version
+}
+
 // View renders the whole screen.
 func (m RootModel) View() string {
 	w, h := m.dims()
@@ -395,7 +403,7 @@ func (m RootModel) View() string {
 		body = m.mainPanes(w, bodyH)
 	}
 
-	lines := []string{th.title.Render("unbound-tui"), ""}
+	lines := []string{th.title.Render(m.titleText()), ""}
 	lines = append(lines, strings.Split(body, "\n")...)
 	if overlay != "" {
 		lines = append(lines, "", overlay)

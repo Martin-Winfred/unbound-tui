@@ -14,21 +14,30 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/unbound"
 )
 
+// version is overridden at build time with
+// -ldflags "-X main.version=<tag>" (see .goreleaser.yaml).
+var version = "dev"
+
 func main() {
-	if err := run(os.Args[1:], os.Stderr); err != nil {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }
 
 // run parses flags, boots the collaborators and starts the TUI.
-func run(args []string, stderr io.Writer) error {
+func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("unbound-tui", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "/etc/unbound/unbound.conf", "path to the unbound config file")
 	fragmentPath := fs.String("fragment", "", "override the fragment path (default: "+config.DefaultFragmentPath+")")
+	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *showVersion {
+		fmt.Fprintln(stdout, "unbound-tui", version)
+		return nil
 	}
 
 	ctl, cfg, err := boot(*configPath, *fragmentPath, stderr)
@@ -36,7 +45,7 @@ func run(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	m := model.NewRootModel(ctl, cfg)
+	m := model.NewRootModel(ctl, cfg, version)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("run tui: %w", err)

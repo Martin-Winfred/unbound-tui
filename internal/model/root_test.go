@@ -41,7 +41,7 @@ func newTestModel(t *testing.T) (RootModel, *fakeCtl) {
 	}
 	mgr.SetFragmentPath(filepath.Join(dir, "frag.conf"))
 	ctl := &fakeCtl{}
-	return NewRootModel(ctl, mgr), ctl
+	return NewRootModel(ctl, mgr, "test"), ctl
 }
 
 func asRoot(t *testing.T, m tea.Model) RootModel {

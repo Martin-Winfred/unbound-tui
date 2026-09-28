@@ -12,7 +12,7 @@ slice of Unbound local data.
 ## 2. Install
 
 ```sh
-go build -o unbound-tui .
+go build -o unbound-tui ./cmd/unbound-tui
 sudo cp unbound-tui /usr/local/bin/
 sudo chmod 755 /usr/local/bin/unbound-tui
 ```
@@ -86,8 +86,8 @@ zone.
 ## 7. Cross-compilation
 
 ```sh
-GOOS=linux GOARCH=arm64 go build -o unbound-tui-linux-arm64 .
-GOOS=linux GOARCH=amd64 go build -o unbound-tui-linux-amd64 .
+GOOS=linux GOARCH=arm64 go build -o unbound-tui-linux-arm64 ./cmd/unbound-tui
+GOOS=linux GOARCH=amd64 go build -o unbound-tui-linux-amd64 ./cmd/unbound-tui
 ```
 
 ## 8. Rollback

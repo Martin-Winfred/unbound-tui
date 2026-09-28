@@ -31,7 +31,7 @@ sudo unbound-tui
 ## Build and run
 
 ```sh
-go build -o unbound-tui .
+go build -o unbound-tui ./cmd/unbound-tui
 
 # On Debian/Ubuntu the fragment lands in the auto-included drop-in directory
 # (/etc/unbound/unbound.conf.d/*.conf). On other layouts add this line to the

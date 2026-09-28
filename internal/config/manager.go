@@ -51,9 +51,8 @@ func (m *Manager) Write(zones []domain.Zone) error {
 }
 
 // CheckInclude verifies (read-only) that the main config includes our
-// fragment as an include directive, returning an actionable ConfigError when
-// it does not. Comment lines are ignored, so a path mentioned in a comment
-// does not count. It never modifies the main config.
+// fragment, either as a literal path or via an include glob that matches it.
+// Comment lines are ignored. It never modifies the main config.
 func (m *Manager) CheckInclude() error {
 	data, err := os.ReadFile(m.mainConfPath)
 	if err != nil {
@@ -67,7 +66,7 @@ func (m *Manager) CheckInclude() error {
 		if !strings.HasPrefix(line, "include:") && !strings.HasPrefix(line, "include-toplevel:") {
 			continue
 		}
-		if strings.Contains(line, m.fragmentPath) {
+		if includeMatches(includeTarget(line), m.fragmentPath) {
 			return nil
 		}
 	}
@@ -77,6 +76,59 @@ func (m *Manager) CheckInclude() error {
 		Fix: fmt.Sprintf("Add this line to %s:\n  include: %s",
 			m.mainConfPath, m.fragmentPath),
 	}
+}
+
+// includeTarget strips the include/include-toplevel prefix, surrounding quotes
+// and any trailing comment.
+func includeTarget(line string) string {
+	rest := line
+	for _, p := range []string{"include-toplevel:", "include:"} {
+		if strings.HasPrefix(rest, p) {
+			rest = strings.TrimSpace(strings.TrimPrefix(rest, p))
+			break
+		}
+	}
+	rest = strings.Trim(rest, `"`)
+	if i := strings.IndexByte(rest, '#'); i >= 0 {
+		rest = strings.TrimSpace(rest[:i])
+	}
+	return rest
+}
+
+// includeMatches reports whether an include target covers fragment: either the
+// target literally names it, or it is a glob that expands to it.
+func includeMatches(target, fragment string) bool {
+	if target == "" {
+		return false
+	}
+	if strings.Contains(target, fragment) {
+		return true
+	}
+	if !strings.ContainsAny(target, "*?[") {
+		return false
+	}
+	// Syntactic match works even before the fragment file exists.
+	if ok, err := filepath.Match(target, fragment); err == nil && ok {
+		return true
+	}
+	matches, err := filepath.Glob(target)
+	if err != nil {
+		return false
+	}
+	want, err := filepath.Abs(fragment)
+	if err != nil {
+		want = fragment
+	}
+	for _, mt := range matches {
+		got, err := filepath.Abs(mt)
+		if err != nil {
+			got = mt
+		}
+		if got == want {
+			return true
+		}
+	}
+	return false
 }
 
 // atomicWriteFile writes crash-safely: temp file + fsync + rename.

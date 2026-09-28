@@ -33,8 +33,10 @@ sudo unbound-tui
 ```sh
 go build -o unbound-tui .
 
-# The main config must include our fragment (the tool only reads this to warn):
-#   include: /etc/unbound/unbound.d/unbound-tui.conf
+# On Debian/Ubuntu the fragment lands in the auto-included drop-in directory
+# (/etc/unbound/unbound.conf.d/*.conf). On other layouts add this line to the
+# main config (the tool only reads it, to warn):
+#   include: /etc/unbound/unbound.conf.d/unbound-tui.conf
 sudo ./unbound-tui
 ```
 
@@ -43,7 +45,7 @@ sudo ./unbound-tui
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `-config` | `/etc/unbound/unbound.conf` | Path to the Unbound config (used for the include check and `unbound-control`) |
-| `-fragment` | `/etc/unbound/unbound.d/unbound-tui.conf` | Fragment file the tool owns |
+| `-fragment` | `/etc/unbound/unbound.conf.d/unbound-tui.conf` | Fragment file the tool owns |
 
 ## Keys
 

@@ -89,3 +89,21 @@ func TestCheckIncludeIgnoresComments(t *testing.T) {
 		t.Errorf("CheckInclude with only a commented include = %v, want ConfigError", err)
 	}
 }
+
+func TestCheckIncludeGlob(t *testing.T) {
+	dir := t.TempDir()
+	confD := filepath.Join(dir, "unbound.conf.d")
+	if err := os.MkdirAll(confD, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	conf := writeTemp(t, "include-toplevel: \""+confD+"/*.conf\"\n")
+	frag := filepath.Join(confD, "unbound-tui.conf") // not created yet
+	m, err := NewManager(conf)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	m.SetFragmentPath(frag)
+	if err := m.CheckInclude(); err != nil {
+		t.Errorf("CheckInclude with a matching glob = %v, want nil", err)
+	}
+}

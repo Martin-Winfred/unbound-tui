@@ -17,17 +17,26 @@ sudo cp unbound-tui /usr/local/bin/
 sudo chmod 755 /usr/local/bin/unbound-tui
 ```
 
-## 3. Include the fragment
+## 3. The fragment file
 
 The tool owns exactly one file and never edits any other config:
 
 ```ini
-# /etc/unbound/unbound.conf
-include: /etc/unbound/unbound.d/unbound-tui.conf
+# /etc/unbound/unbound.conf.d/unbound-tui.conf
 ```
 
-On start the tool reads the main config only to warn you when this include is
-missing; it never writes to the main config.
+Debian and Ubuntu load `/etc/unbound/unbound.conf.d/*.conf` automatically, so
+on those systems no extra configuration is needed. On other layouts add the
+include yourself:
+
+```ini
+# main unbound.conf
+include: /etc/unbound/unbound.conf.d/unbound-tui.conf
+```
+
+On start the tool reads the main config only to warn you when the fragment is
+not included (literal path or a matching glob); it never writes to the main
+config.
 
 ## 4. Run
 

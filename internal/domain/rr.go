@@ -5,8 +5,25 @@ import (
 	"strings"
 )
 
-// RRString 构造与 SQLite/片段一致的 RR 文本。输入必须已通过 validate 校验。
-func RRString(r Record) string {
-	fqdn := strings.TrimSuffix(r.Name, ".") + "." + strings.TrimSuffix(r.Zone, ".") + "."
+// FQDN normalizes a name to a fully-qualified form with a trailing dot.
+func FQDN(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimSuffix(name, ".")
+	if name == "" {
+		return "."
+	}
+	return name + "."
+}
+
+// RRString renders a record as unbound zonefile RR text qualified by its
+// zone. Apex records (Name "" or "@") render as the zone name itself, never
+// as the invalid "@.<zone>." form. The input must have passed validate.
+func RRString(zone string, r Record) string {
+	z := FQDN(zone)
+	name := strings.TrimSuffix(r.Name, ".")
+	fqdn := z
+	if name != "" && name != "@" {
+		fqdn = name + "." + z
+	}
 	return fmt.Sprintf("%s %d IN %s %s", fqdn, r.TTL, r.RType, r.Value)
 }

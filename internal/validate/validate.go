@@ -9,30 +9,35 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
-// label 规则：RFC 1035 字母/数字/连字符，1-63 字符，首尾不为连字符
-var labelRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+// zoneLabelRe is the RFC 1035 label rule: letters/digits/hyphens, 1-63
+// chars, no leading or trailing hyphen.
+var zoneLabelRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
-// 记录相对名：label、点分隔，允许通配符 "*." 前缀与 "@"
-var nameRe = regexp.MustCompile(`^(@|\*(\.[a-zA-Z0-9-]+)*|[a-zA-Z0-9_]([a-zA-Z0-9-_.]{0,61}[a-zA-Z0-9_])?)$`)
+// recordLabelRe additionally permits a leading underscore, which real records
+// use (_dmarc, _acme-challenge, SRV service names).
+var recordLabelRe = regexp.MustCompile(`^[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?$`)
 
 var rtypeWhitelist = map[string]bool{
 	"A": true, "AAAA": true, "CNAME": true, "PTR": true,
 	"MX": true, "TXT": true, "SRV": true, "NS": true,
-	// 注：CAA 值含引号，与注入防御冲突，暂不支持（后续如需再评估）
+	// Note: CAA values contain quotes, which conflicts with injection
+	// defense; not supported for now (re-evaluate later if needed).
 }
 
-const maxTTL = 604800 // 7 天
+const maxTTL = 604800 // 7 days
 
-// ValidateRecord 所有写入路径的唯一入口
-func ValidateRecord(r domain.Record) error {
-	if err := ValidateZoneName(r.Zone); err != nil {
+// ValidateRecord validates a record in the context of the zone it belongs to.
+// It is the single entry point for every write path: the fragment file is
+// only ever produced from records that passed this check.
+func ValidateRecord(zone string, r domain.Record) error {
+	if err := ValidateZoneName(zone); err != nil {
 		return fmt.Errorf("zone: %w", err)
 	}
-	if !nameRe.MatchString(r.Name) {
+	if !validRecordName(r.Name) {
 		return fmt.Errorf("invalid record name %q", r.Name)
 	}
-	if injectable(r.Zone) || injectable(r.Name) || injectable(r.Value) {
-		return fmt.Errorf("record contains forbidden characters (quote/backslash/newline/;/#)")
+	if injectable(zone) || injectable(r.Name) || injectable(r.Value) {
+		return fmt.Errorf("record contains forbidden characters (quote/backslash/control/;/#)")
 	}
 	if !rtypeWhitelist[r.RType] {
 		return fmt.Errorf("unsupported record type %q", r.RType)
@@ -43,25 +48,56 @@ func ValidateRecord(r domain.Record) error {
 	return validateValue(r.RType, r.Value)
 }
 
-// ValidateZoneName 校验区域名（可带尾部点）
+// ValidateZoneName validates a zone name (an optional trailing dot is allowed).
 func ValidateZoneName(name string) error {
 	name = strings.TrimSuffix(name, ".")
 	if name == "" || len(name) > 253 {
 		return fmt.Errorf("invalid zone name length: %q", name)
 	}
 	for _, label := range strings.Split(name, ".") {
-		if !labelRe.MatchString(label) {
+		if !zoneLabelRe.MatchString(label) {
 			return fmt.Errorf("invalid label %q", label)
 		}
 	}
 	return nil
 }
 
-func injectable(s string) bool {
-	return strings.ContainsAny(s, "\"'\\\n\r;#")
+// validRecordName accepts the apex ("@"), a wildcard ("*" or "*.<labels>"),
+// or a dot-separated relative name whose every label is non-empty and valid.
+func validRecordName(name string) bool {
+	if name == "" || name == "@" || name == "*" {
+		return true
+	}
+	if strings.HasPrefix(name, "*.") {
+		name = strings.TrimPrefix(name, "*.")
+		if name == "" {
+			return false
+		}
+	}
+	for _, label := range strings.Split(name, ".") {
+		if !recordLabelRe.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 
-// validateValue 按记录类型校验值格式
+// injectable reports whether s contains a character that could escape the
+// config or command quoting: quotes, backslash, ";", "#", or any control
+// character (including tab, CR and LF).
+func injectable(s string) bool {
+	if strings.ContainsAny(s, "\"'\\;#") {
+		return true
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// validateValue validates the value format per record type.
 func validateValue(rtype, value string) error {
 	switch rtype {
 	case "A":
@@ -75,6 +111,9 @@ func validateValue(rtype, value string) error {
 			return fmt.Errorf("invalid AAAA address %q", value)
 		}
 	case "CNAME", "PTR", "NS":
+		if strings.Contains(value, " ") {
+			return fmt.Errorf("invalid %s target %q", rtype, value)
+		}
 		if err := ValidateZoneName(value); err != nil {
 			return fmt.Errorf("invalid %s target: %w", rtype, err)
 		}

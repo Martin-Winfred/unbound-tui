@@ -1,35 +1,33 @@
 package domain
 
-import "time"
-
+// Zone is a local-zone owned by the tool together with its records.
 type Zone struct {
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	IsActive  bool      `json:"is_active"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name     string
+	Type     string
+	Disabled bool
+	Records  []Record
 }
 
+// Record is one local-data entry, named relative to its owning zone.
+// An empty Name or "@" denotes the zone apex.
 type Record struct {
-	ID        int64     `json:"id"`
-	Zone      string    `json:"zone"`
-	Name      string    `json:"name"`
-	RType     string    `json:"rtype"`
-	Value     string    `json:"value"`
-	TTL       int       `json:"ttl"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name     string
+	RType    string
+	Value    string
+	TTL      int
+	Disabled bool
 }
 
-type StoreStats struct {
-	TotalZones   int `json:"total_zones"`
-	TotalRecords int `json:"total_records"`
-	ActiveZones  int `json:"active_zones"`
-}
-
-// StatusInfo 是 unbound-control status 的解析结果
+// StatusInfo is the parsed result of `unbound-control status`.
 type StatusInfo struct {
 	Version     string // "1.26.0"
-	ControlType string // "namedpipe" | "ssl" | ""（未启用）
+	ControlType string // "namedpipe" | "ssl" | "" (not enabled)
 	Raw         string
+}
+
+// LocalZone is a runtime zone entry as reported by
+// `unbound-control list_local_zones`.
+type LocalZone struct {
+	Name string
+	Type string
 }

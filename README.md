@@ -11,6 +11,23 @@ The tool owns **one** Unbound config fragment and nothing else. It parses that f
 - **Enable/disable without losing data.** Disabling a zone or record keeps it in the file as commented lines, so it stays editable but is no longer served.
 - **Injection defense.** Every value passes a whitelist validator before it can reach the fragment file, which is the only write path.
 
+## Status
+
+**Early access.** The core is implemented and tested:
+
+- Manage local data: add and delete zones, add/edit/delete records (TTL, type, value), change a zone's type, and enable/disable a zone or record without losing it.
+- Stateless and file-backed: the tool owns a single fragment and rewrites it atomically on apply; no database, no state between runs.
+- Safe coexistence: only its own fragment is written. Other Unbound configuration is read-only, and a read-only *Foreign* view (with `/` filter) shows what Unbound serves outside the fragment.
+- `w` validates the model, writes the fragment atomically and runs `unbound-control reload`.
+
+Verified with unit tests across every package (`go test ./...`) and end-to-end on **Debian 13 with Unbound 1.26** (create/edit/apply/reload, foreign view, enable/disable).
+
+Not yet supported:
+
+- Forwarding / recursion configuration (`forward-zone`, `stub-zone`, `forward-addr`, DoT/TLS bundle).
+- Unbound's non-data settings (interfaces, `access-control`, `root-hints`, ...).
+- Record types beyond A, AAAA, CNAME, PTR, MX, TXT, SRV and NS.
+
 ## Usage
 
 ```sh
@@ -77,6 +94,22 @@ local-data: "www.example.com. 300 IN A 192.0.2.2"
 # local-zone: "old.example." static
 # local-data: "host.old.example. 60 IN A 192.0.2.9"
 ```
+
+## Roadmap
+
+Rough, in no particular order:
+
+- Forwarding / recursion configuration (root and named `forward-zone`, optional DoT; `stub-zone`).
+- Read-only view of existing forwarders (`unbound-control list_forwards` / `list_stubs`).
+- More record types and value formats.
+- Packaging (deb / ARM) and a ready-to-run systemd unit.
+- Importing existing `local-zone` / `local-data` into the managed fragment.
+
+## Feedback
+
+This is early access - bug reports, feature requests and ideas are welcome. Please open an issue:
+
+<https://github.com/Martin-Winfred/unbound-tui/issues>
 
 ## Development
 

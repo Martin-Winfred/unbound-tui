@@ -6,12 +6,10 @@ package model
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/config"
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
@@ -102,6 +100,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ForeignLoadedMsg:
 		m.foreign = newForeignModel(msg.Zones, msg.RRs, msg.Err)
+		m.foreign.resize(m.width, m.bodyHeightFor(m.height))
 		return m, nil
 
 	case FormCancelMsg:
@@ -118,6 +117,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.foreign.resize(msg.Width, m.bodyHeightFor(msg.Height))
 		return m, nil
 
 	case ErrorMsg:
@@ -134,6 +134,14 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveUp()
 	case actionDown:
 		m.moveDown()
+	case actionTop:
+		m.moveTop()
+	case actionBottom:
+		m.moveBottom()
+	case actionPageDown:
+		m.movePageDown()
+	case actionPageUp:
+		m.movePageUp()
 	case actionTogglePane:
 		m.zoneFocused = !m.zoneFocused
 	case actionAddZone:
@@ -324,6 +332,71 @@ func (m *RootModel) moveDown() {
 	}
 }
 
+func (m *RootModel) moveTop() {
+	if m.zoneFocused {
+		m.zoneCursor = 0
+		m.recCursor = 0
+		return
+	}
+	m.recCursor = 0
+}
+
+func (m *RootModel) moveBottom() {
+	if m.zoneFocused {
+		if len(m.zones) > 0 {
+			m.zoneCursor = len(m.zones) - 1
+		}
+		m.recCursor = 0
+		return
+	}
+	if z, ok := m.zoneAt(m.zoneCursor); ok {
+		m.recCursor = len(m.zones[z].Records) - 1
+		if m.recCursor < 0 {
+			m.recCursor = 0
+		}
+	}
+}
+
+func (m *RootModel) movePageDown() {
+	step := m.pageSize()
+	if m.zoneFocused {
+		m.zoneCursor += step
+		if m.zoneCursor > len(m.zones)-1 {
+			m.zoneCursor = len(m.zones) - 1
+		}
+		if m.zoneCursor < 0 {
+			m.zoneCursor = 0
+		}
+		m.recCursor = 0
+		return
+	}
+	if z, ok := m.zoneAt(m.zoneCursor); ok {
+		m.recCursor += step
+		if m.recCursor > len(m.zones[z].Records)-1 {
+			m.recCursor = len(m.zones[z].Records) - 1
+		}
+		if m.recCursor < 0 {
+			m.recCursor = 0
+		}
+	}
+}
+
+func (m *RootModel) movePageUp() {
+	step := m.pageSize()
+	if m.zoneFocused {
+		m.zoneCursor -= step
+		if m.zoneCursor < 0 {
+			m.zoneCursor = 0
+		}
+		m.recCursor = 0
+		return
+	}
+	m.recCursor -= step
+	if m.recCursor < 0 {
+		m.recCursor = 0
+	}
+}
+
 func (m *RootModel) toggleDisabled() {
 	if m.zoneFocused {
 		z, ok := m.zoneAt(m.zoneCursor)
@@ -495,121 +568,4 @@ func hasRecord(recs []domain.Record, r domain.Record) bool {
 		}
 	}
 	return false
-}
-
-// --- view ---
-
-func (m RootModel) View() string {
-	var s strings.Builder
-	s.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).
-		Render("unbound-tui") + "\n\n")
-
-	s.WriteString("Zones:\n")
-	if len(m.zones) == 0 {
-		s.WriteString("  (none - press 'a' to add one)\n")
-	}
-	for i, z := range m.zones {
-		cursor := " "
-		if i == m.zoneCursor && m.zoneFocused {
-			cursor = ">"
-		}
-		state := ""
-		if z.Disabled {
-			state = " (disabled)"
-		}
-		fmt.Fprintf(&s, "%s [%s] %s%s\n", cursor, z.Type, z.Name, state)
-	}
-
-	s.WriteString(strings.Repeat("-", 40) + "\nRecords:\n")
-	z, ok := m.zoneAt(m.zoneCursor)
-	if !ok || len(m.zones[z].Records) == 0 {
-		s.WriteString("  (none)\n")
-	} else {
-		for i, r := range m.zones[z].Records {
-			cursor := " "
-			if i == m.recCursor && !m.zoneFocused {
-				cursor = ">"
-			}
-			name := r.Name
-			if name == "" {
-				name = "@"
-			}
-			state := ""
-			if r.Disabled {
-				state = " (disabled)"
-			}
-			fmt.Fprintf(&s, "%s %s %s %s ttl=%d%s\n", cursor, name, r.RType, r.Value, r.TTL, state)
-		}
-	}
-
-	switch m.state {
-	case StateForm:
-		s.WriteString("\n" + m.clamp(m.form.View()))
-	case StateForeign:
-		s.WriteString("\n" + m.clamp(m.foreign.View()))
-	case StateConfirm:
-		s.WriteString("\n" + m.confirmPrompt())
-	}
-
-	if m.notice != "" {
-		s.WriteString("\n" + m.notice)
-	}
-	s.WriteString("\n" + m.statusBar())
-	return s.String()
-}
-
-func (m RootModel) confirmPrompt() string {
-	switch m.confirmKind {
-	case "zone":
-		if m.confirmZone >= 0 && m.confirmZone < len(m.zones) {
-			return fmt.Sprintf("Delete zone %s and all its records? (y to confirm / any other key to cancel)",
-				m.zones[m.confirmZone].Name)
-		}
-	case "record":
-		if m.confirmZone >= 0 && m.confirmZone < len(m.zones) {
-			recs := m.zones[m.confirmZone].Records
-			if m.confirmRec >= 0 && m.confirmRec < len(recs) {
-				r := recs[m.confirmRec]
-				name := r.Name
-				if name == "" {
-					name = "@"
-				}
-				return fmt.Sprintf("Delete record %s %s %s? (y to confirm / any other key to cancel)",
-					name, r.RType, r.Value)
-			}
-		}
-	case "quit":
-		return "Unsaved changes - quit anyway? (y to confirm / any other key to cancel)"
-	}
-	return ""
-}
-
-func (m RootModel) statusBar() string {
-	var parts []string
-	switch m.state {
-	case StateApplying:
-		parts = append(parts, "applying...")
-	case StateError:
-		if m.lastError != nil {
-			parts = append(parts, "error: "+m.lastError.Error())
-		}
-	default:
-		parts = append(parts, "ready")
-	}
-	if m.dirty {
-		parts = append(parts, "unsaved changes (w to apply)")
-	} else {
-		parts = append(parts, "saved")
-	}
-	if os.Geteuid() != 0 {
-		parts = append(parts, "not root")
-	}
-	return strings.Join(parts, " | ")
-}
-
-func (m RootModel) clamp(s string) string {
-	if m.width <= 0 {
-		return s
-	}
-	return lipgloss.NewStyle().MaxWidth(m.width).Render(s)
 }

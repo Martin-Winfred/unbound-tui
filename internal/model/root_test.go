@@ -211,7 +211,7 @@ func TestViewRendersZonesAndRecords(t *testing.T) {
 	m.zoneFocused = false
 	m.dirty = true
 	view := m.View()
-	for _, want := range []string{"example.com.", "www", "192.0.2.1", "unsaved changes"} {
+	for _, want := range []string{"example.com.", "www", "192.0.2.1", "UNSAVED"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View missing %q:\n%s", want, view)
 		}

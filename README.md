@@ -105,6 +105,8 @@ Rough, in no particular order:
 - Packaging (deb / ARM) and a ready-to-run systemd unit.
 - Importing existing `local-zone` / `local-data` into the managed fragment.
 
+See [ROADMAP.md](ROADMAP.md) for the detailed, milestone-based plan.
+
 ## Feedback
 
 This is early access - bug reports, feature requests and ideas are welcome. Please open an issue:

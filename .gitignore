@@ -30,6 +30,14 @@ go.work.sum
 # Local design doc (kept out of version control by owner)
 /design.md
 
+# SQLite artifacts of the legacy db-backed version (no longer produced)
+*.db
+*.db-shm
+*.db-wal
+
+# Local CodeGraph index
+.codegraph/
+
 # Editor/IDE
 # .idea/
 # .vscode/

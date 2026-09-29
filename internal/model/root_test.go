@@ -829,6 +829,43 @@ func TestConfigCrossViewZoneAddVisibleInConfig(t *testing.T) {
 	}
 }
 
+// TestInitLoadsScalarIndex pins that the startup snapshot carries the scalar
+// warning index built from the same effective read that feeds the upstreams
+// snapshot, and that the ZonesLoadedMsg handler stores it.
+func TestInitLoadsScalarIndex(t *testing.T) {
+	m, _ := newTestModel(t)
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte("server:\n  verbosity: 3\n"), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+	foreign := filepath.Join(filepath.Dir(m.cfg.FragmentPath()), "zz-foreign.conf")
+	if err := os.WriteFile(foreign, []byte("server:\n  verbosity: 1\n"), 0644); err != nil {
+		t.Fatalf("write foreign: %v", err)
+	}
+	main := m.cfg.MainConfPath()
+	// Includes are resolved relative to the declaring file's directory; keep
+	// them relative so this test does not depend on absolute-include support.
+	if err := os.WriteFile(main, []byte("include: frag.conf\ninclude: zz-foreign.conf\n"), 0644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(foreign)
+	if err != nil {
+		resolved = foreign
+	}
+
+	loaded, ok := m.Init()().(ZonesLoadedMsg)
+	if !ok {
+		t.Fatalf("Init produced %T, want ZonesLoadedMsg", m.Init()())
+	}
+	got := loaded.ScalarIdx[[2]string{"server", "verbosity"}]
+	if len(got) != 1 || got[0] != resolved {
+		t.Fatalf("Init ScalarIdx[server,verbosity] = %+v, want [%s]", got, resolved)
+	}
+	m = asRoot(t, mustUpdate(t, m, loaded))
+	if got := m.scalarIdx[[2]string{"server", "verbosity"}]; len(got) != 1 || got[0] != resolved {
+		t.Errorf("m.scalarIdx = %+v, want the Init snapshot via [%s]", m.scalarIdx, resolved)
+	}
+}
+
 func TestCloneZonesIsIndependent(t *testing.T) {
 	orig := []domain.Zone{{
 		Name: "example.com.", Type: "transparent",

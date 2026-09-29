@@ -126,6 +126,45 @@ func buildUpstreamRows(eff config.Effective, ownPath string) []UpstreamRow {
 	return out
 }
 
+// buildScalarIndex maps each singleton option ({kind,key}) that a foreign
+// server/remote-control section in the effective include graph declares to the
+// files that declare it, in effective order, with each source listed once.
+// ownPath is normalized the same way ReadEffective normalizes every Source, so
+// a fragment reached through a symlink is still recognized as ours. It is the
+// add-time warning snapshot: a miss means no warning.
+func buildScalarIndex(eff config.Effective, ownPath string) map[[2]string][]string {
+	own := normalizeSourcePath(ownPath)
+	out := make(map[[2]string][]string)
+	for _, s := range eff.Sections {
+		if s.Kind != "server" && s.Kind != "remote-control" {
+			continue
+		}
+		if s.Source == own {
+			continue
+		}
+		for _, e := range s.Entries {
+			if !config.ScalarKeys[e.Key] {
+				continue
+			}
+			pair := [2]string{s.Kind, e.Key}
+			if !containsString(out[pair], s.Source) {
+				out[pair] = append(out[pair], s.Source)
+			}
+		}
+	}
+	return out
+}
+
+// containsString reports whether ss already holds s.
+func containsString(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // normalizeSourcePath mirrors config's unexported resolveOwn (absolute,
 // symlinks resolved, falling back to the absolute path when the file does not
 // exist yet). It keeps buildUpstreamRows' comparison in lockstep with the

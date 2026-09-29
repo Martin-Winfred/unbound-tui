@@ -26,6 +26,10 @@ type ZonesLoadedMsg struct {
 	// forward/stub sections, used for add-time conflict warnings. It is nil
 	// when the upstream read failed.
 	Upstreams []UpstreamRow
+	// ScalarIdx is the load-time snapshot of foreign server/remote-control
+	// singleton options ({kind,key} -> foreign sources), used for add-time
+	// conflict warnings. It is nil when the effective read failed.
+	ScalarIdx map[[2]string][]string
 }
 
 // AppliedMsg reports a successful write + reload.
@@ -37,6 +41,9 @@ type ForeignLoadedMsg struct {
 	Zones     []domain.LocalZone
 	RRs       []string
 	Upstreams []UpstreamRow
+	// ScalarIdx is the fresh scalar warning index built from the same
+	// effective read as Upstreams ({kind,key} -> foreign sources).
+	ScalarIdx map[[2]string][]string
 	// UpErr is a non-fatal upstream-fetch error: the list degrades to empty
 	// and the message is shown in the upstreams tab.
 	UpErr string

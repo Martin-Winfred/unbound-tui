@@ -432,3 +432,104 @@ func TestConfigFormKeyRouting(t *testing.T) {
 		}
 	})
 }
+
+// --- scalar add-time warning ---
+
+const scalarWarnFixture = "server: verbosity already set in /etc/unbound/conf.d/zz.conf — edit that file manually (see deploy.md: Conflicts and manual resolution)"
+
+// submitEntryToServer opens the entry form on section 0 of a one-server
+// fragment, types key/value and folds the submission back into the model.
+func submitEntryToServer(t *testing.T, m RootModel, key, value string) RootModel {
+	t.Helper()
+	m.newEntryForm(0)
+	m.form.inputs[0].SetValue(key)
+	m.form.inputs[1].SetValue(value)
+	next, cmd := submitFormKey(t, m, "ctrl+s")
+	if cmd == nil {
+		t.Fatalf("submit of %q produced no command; form error = %v", key, next.form.err)
+	}
+	msg, ok := cmd().(ConfigFormSubmitMsg)
+	if !ok {
+		t.Fatalf("submit produced %T, want ConfigFormSubmitMsg", cmd())
+	}
+	return asRoot(t, mustUpdate(t, next, msg))
+}
+
+func TestConfigFormAddEntryScalarWarning(t *testing.T) {
+	f := domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "edns-buffer-size", Value: "1232"}}},
+	}}
+	m := configModel(t, f)
+	m.cfgView = ConfigViewModel{SecCursor: 0, SecFocused: true}
+	m.scalarIdx = map[[2]string][]string{{"server", "verbosity"}: {"/etc/unbound/conf.d/zz.conf"}}
+
+	m = submitEntryToServer(t, m, "verbosity", "3")
+
+	entries := m.frag.Sections[0].Entries
+	if len(entries) != 2 || entries[1].Key != "verbosity" || entries[1].Value != "3" {
+		t.Fatalf("entries = %+v, want the verbosity entry created", entries)
+	}
+	if !m.dirty {
+		t.Error("dirty = false, want the warning to stay non-blocking")
+	}
+	if m.state != StateReady {
+		t.Errorf("state = %v, want StateReady (no block)", m.state)
+	}
+	if m.notice != scalarWarnFixture {
+		t.Errorf("notice = %q, want %q", m.notice, scalarWarnFixture)
+	}
+}
+
+// TestConfigFormAddEntryScalarWarningExempt pins the boundaries: a repeatable
+// key (access-control) and a singleton key with no foreign hit produce no
+// warning.
+func TestConfigFormAddEntryScalarWarningExempt(t *testing.T) {
+	cases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"repeatable access-control", "access-control", "192.0.2.0/24 allow"},
+		{"singleton key with no foreign hit", "port", "53"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := domain.Fragment{Sections: []domain.Section{{Kind: "server"}}}
+			m := configModel(t, f)
+			m.cfgView = ConfigViewModel{SecCursor: 0, SecFocused: true}
+			m.scalarIdx = map[[2]string][]string{{"server", "verbosity"}: {"/etc/unbound/conf.d/zz.conf"}}
+			m = submitEntryToServer(t, m, tc.key, tc.value)
+			if m.notice != "" {
+				t.Errorf("notice = %q, want empty for %s", m.notice, tc.name)
+			}
+			if !hasEntry(m.frag, tc.key, tc.value) {
+				t.Errorf("entry %q not created", tc.key)
+			}
+		})
+	}
+}
+
+// TestConfigFormEditEntryScalarWarning covers the edit branch of the generic
+// submit path.
+func TestConfigFormEditEntryScalarWarning(t *testing.T) {
+	f := domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "1"}}},
+	}}
+	m := configModel(t, f)
+	m.scalarIdx = map[[2]string][]string{{"server", "verbosity"}: {"/etc/unbound/conf.d/zz.conf"}}
+
+	m.editEntryForm(0, 0, m.frag.Sections[0].Entries[0])
+	m.form.inputs[1].SetValue("3")
+	next, cmd := submitFormKey(t, m, "ctrl+s")
+	if cmd == nil {
+		t.Fatalf("edit submit produced no command; err = %v", next.form.err)
+	}
+	m = asRoot(t, mustUpdate(t, next, cmd().(ConfigFormSubmitMsg)))
+
+	if got := m.frag.Sections[0].Entries[0].Value; got != "3" {
+		t.Errorf("edited value = %q, want 3", got)
+	}
+	if m.notice != scalarWarnFixture {
+		t.Errorf("notice = %q, want %q", m.notice, scalarWarnFixture)
+	}
+}

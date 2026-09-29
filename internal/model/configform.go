@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Martin-Winfred/unbound-tui/internal/config"
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 	"github.com/Martin-Winfred/unbound-tui/internal/validate"
 )
@@ -306,6 +307,14 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 
 	m.refreshZones()
 	m.dirty = true
+	// A generic entry submit may set a singleton option that a foreign
+	// server/remote-control section already sets. Warn without blocking: the
+	// apply gate re-checks freshly and refuses; here we only point at the file.
+	if msg.Mode == FormAddEntry || msg.Mode == FormEditEntry {
+		if warn := m.scalarWarning(msg.SecIndex, msg.Key); warn != "" {
+			m.notice = warn
+		}
+	}
 	// A named forward-zone/stub-zone submission chains straight into the
 	// specialized form on the section just created. A projection failure
 	// (StateError) keeps its loud error instead of opening the form.
@@ -314,4 +323,21 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 		m.state = StateSectionForm
 	}
 	return m, nil
+}
+
+// scalarWarning returns the add-time conflict notice for a singleton option
+// just set in section secIndex, or "" when the key is not a singleton, the
+// section kind is not server/remote-control, or no foreign source sets it.
+// The wording is pinned and matches the apply-time refusal hint.
+func (m RootModel) scalarWarning(secIndex int, key string) string {
+	s, ok := m.sectionAt(secIndex)
+	if !ok || (s.Kind != "server" && s.Kind != "remote-control") || !config.ScalarKeys[key] {
+		return ""
+	}
+	sources := m.scalarIdx[[2]string{s.Kind, key}]
+	if len(sources) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s: %s already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)",
+		s.Kind, key, sources[0])
 }

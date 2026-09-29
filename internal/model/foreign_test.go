@@ -302,3 +302,100 @@ func TestForeignLoadedMsgBackfillsUpstreamSnapshot(t *testing.T) {
 		}
 	})
 }
+
+// TestBuildScalarIndex pins the add-time warning snapshot: it keeps only
+// singleton keys in a server/remote-control section, drops everything our own
+// fragment declares, and lists the foreign sources in effective order.
+func TestBuildScalarIndex(t *testing.T) {
+	own := "/etc/unbound/unbound.conf.d/unbound-tui.conf"
+	eff := config.Effective{Sections: []config.EffectiveSection{
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{
+			{Key: "verbosity", Value: "5"},
+			{Key: "access-control", Value: "192.0.2.0/24 allow"},
+		}}, Source: "/etc/unbound/conf.d/zz-foreign.conf"},
+		{Section: domain.Section{Kind: "remote-control", Entries: []domain.Entry{
+			{Key: "control-port", Value: "8953"},
+		}}, Source: "/etc/unbound/remote-control.conf"},
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{
+			{Key: "verbosity", Value: "3"},
+		}}, Source: own},
+		{Section: domain.Section{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "port", Value: "853"},
+		}}, Source: "/etc/unbound/conf.d/fwd.conf"},
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{
+			{Key: "verbosity", Value: "1"},
+		}}, Source: "/etc/unbound/conf.d/other.conf"},
+	}}
+	got := buildScalarIndex(eff, own)
+	want := map[[2]string][]string{
+		{"server", "verbosity"}:            {"/etc/unbound/conf.d/zz-foreign.conf", "/etc/unbound/conf.d/other.conf"},
+		{"remote-control", "control-port"}: {"/etc/unbound/remote-control.conf"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildScalarIndex:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestBuildScalarIndexExcludesSymlinkedOwn pins the ownPath trap for the
+// scalar snapshot, mirroring buildUpstreamRows: Source is symlink-resolved by
+// ReadEffective while the caller may hand in a symlinked fragment path.
+func TestBuildScalarIndexExcludesSymlinkedOwn(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "frag.conf")
+	if err := os.WriteFile(real, []byte("server:\n  verbosity: 3\n"), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+	link := filepath.Join(dir, "link.conf")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	source, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	eff := config.Effective{Sections: []config.EffectiveSection{
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "3"}}}, Source: source},
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "1"}}}, Source: filepath.Join(dir, "other.conf")},
+	}}
+	got := buildScalarIndex(eff, link)
+	if len(got) != 1 {
+		t.Fatalf("buildScalarIndex with symlinked ownPath = %+v, want only the foreign pair", got)
+	}
+	sources := got[[2]string{"server", "verbosity"}]
+	if len(sources) != 1 || sources[0] != filepath.Join(dir, "other.conf") {
+		t.Errorf("sources = %+v, want only the foreign file", sources)
+	}
+}
+
+// TestForeignLoadedMsgBackfillsScalarIndex pins the backflow from the Foreign
+// fetch into the add-time scalar snapshot: a successful fetch refreshes
+// m.scalarIdx with the fresher index, while a read failure (UpErr) leaves the
+// previous snapshot untouched so the warning never goes blind.
+func TestForeignLoadedMsgBackfillsScalarIndex(t *testing.T) {
+	t.Run("success refreshes the snapshot", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m.scalarIdx = map[[2]string][]string{{"server", "verbosity"}: {"old.conf"}}
+		fresh := map[[2]string][]string{{"server", "verbosity"}: {"new.conf"}}
+		m = asRoot(t, mustUpdate(t, m, ForeignLoadedMsg{
+			Zones:     []domain.LocalZone{{Name: "z.example.", Type: "static"}},
+			ScalarIdx: fresh,
+		}))
+		if !reflect.DeepEqual(m.scalarIdx, fresh) {
+			t.Errorf("m.scalarIdx = %+v, want the fresher fetch %+v", m.scalarIdx, fresh)
+		}
+	})
+
+	t.Run("error keeps the previous snapshot", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		prev := map[[2]string][]string{{"server", "verbosity"}: {"old.conf"}}
+		m.scalarIdx = prev
+		m = asRoot(t, mustUpdate(t, m, ForeignLoadedMsg{
+			Err:       fmt.Errorf("list zones: boom"),
+			UpErr:     "read config: boom",
+			ScalarIdx: map[[2]string][]string{{"server", "verbosity"}: {"new.conf"}},
+		}))
+		if !reflect.DeepEqual(m.scalarIdx, prev) {
+			t.Errorf("m.scalarIdx = %+v, want the previous snapshot %+v", m.scalarIdx, prev)
+		}
+	})
+}

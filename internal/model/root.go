@@ -65,6 +65,11 @@ type RootModel struct {
 	// its own, freshly fetched copy.
 	upstreams []UpstreamRow
 
+	// scalarIdx maps each foreign singleton option ({kind,key} -> sources) in
+	// the include graph, for add-time scalar conflict warnings. Like
+	// upstreams, the Foreign view's fresh fetch backfills it on success.
+	scalarIdx map[[2]string][]string
+
 	width, height int
 }
 
@@ -86,10 +91,12 @@ func (m RootModel) Init() tea.Cmd {
 			return ErrorMsg{fmt.Errorf("read fragment: %w", err)}
 		}
 		var ups []UpstreamRow
+		var idx map[[2]string][]string
 		if eff, err := config.ReadEffective(m.cfg.MainConfPath(), m.cfg.FragmentPath()); err == nil {
 			ups = buildUpstreamRows(eff, m.cfg.FragmentPath())
+			idx = buildScalarIndex(eff, m.cfg.FragmentPath())
 		}
-		return ZonesLoadedMsg{Fragment: f, Upstreams: ups}
+		return ZonesLoadedMsg{Fragment: f, Upstreams: ups, ScalarIdx: idx}
 	}
 }
 
@@ -126,6 +133,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ZonesLoadedMsg:
 		m.frag = msg.Fragment
 		m.upstreams = msg.Upstreams
+		m.scalarIdx = msg.ScalarIdx
 		m.clampCfgCursors()
 		zones, err := config.ZonesFromFragment(msg.Fragment)
 		if err != nil {
@@ -148,10 +156,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.foreign = newForeignModel(msg.Zones, msg.RRs, msg.Err)
 		m.foreign.setUpstreams(msg.Upstreams, msg.UpErr)
 		// A successful fetch is fresher than the Init snapshot, so backfill the
-		// add-time conflict warning list. A read failure leaves the snapshot
-		// alone rather than blanking it.
+		// add-time conflict warning lists. A read failure leaves the snapshots
+		// alone rather than blanking them.
 		if msg.UpErr == "" {
 			m.upstreams = msg.Upstreams
+			m.scalarIdx = msg.ScalarIdx
 		}
 		m.foreign.resize(m.width, m.bodyHeightFor(m.height))
 		return m, nil
@@ -428,17 +437,20 @@ func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 		if err != nil {
 			return ForeignLoadedMsg{Err: err}
 		}
-		// Fresh read of the include graph for the upstreams tab; a failure is
-		// non-fatal and shown as a notice in that tab.
+		// Fresh read of the include graph for the upstreams tab and the scalar
+		// warning snapshot; a failure is non-fatal and shown as a notice in
+		// that tab.
 		var ups []UpstreamRow
+		var idx map[[2]string][]string
 		var upErr string
 		if eff, err := config.ReadEffective(cfg.MainConfPath(), cfg.FragmentPath()); err != nil {
 			upErr = err.Error()
 		} else {
 			ups = buildUpstreamRows(eff, cfg.FragmentPath())
+			idx = buildScalarIndex(eff, cfg.FragmentPath())
 		}
 		fz, fr := foreignEntries(zones, rtZones, rtRRs)
-		return ForeignLoadedMsg{Zones: fz, RRs: fr, Upstreams: ups, UpErr: upErr}
+		return ForeignLoadedMsg{Zones: fz, RRs: fr, Upstreams: ups, ScalarIdx: idx, UpErr: upErr}
 	}
 }
 

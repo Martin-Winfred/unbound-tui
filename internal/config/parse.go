@@ -1,10 +1,25 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
+
+// ParseFragment reads the fragment file into the generic section/entry model.
+// A missing file yields an empty Fragment and a nil error.
+func ParseFragment(path string) (domain.Fragment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return domain.Fragment{}, nil
+		}
+		return domain.Fragment{}, fmt.Errorf("read fragment: %w", err)
+	}
+	return parseFragment(data)
+}
 
 // parseFragment parses a fragment file into its generic section/entry model.
 //

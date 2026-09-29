@@ -31,10 +31,11 @@ local-data: "www.example.com. 300 IN A 192.0.2.2"
 # local-zone: "old.example." static
 # local-data: "host.old.example. 60 IN A 192.0.2.9"
 `)
-	got, err := ParseFragment(path)
+	f, err := ParseFragment(path)
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
+	got := ZonesFromFragment(f)
 	want := []domain.Zone{
 		{
 			Name: "example.com.", Type: "transparent",
@@ -56,10 +57,11 @@ local-data: "www.example.com. 300 IN A 192.0.2.2"
 }
 
 func TestParseFragmentMissingIsEmpty(t *testing.T) {
-	got, err := ParseFragment(filepath.Join(t.TempDir(), "absent.conf"))
+	f, err := ParseFragment(filepath.Join(t.TempDir(), "absent.conf"))
 	if err != nil {
 		t.Fatalf("ParseFragment(absent) = %v, want nil", err)
 	}
+	got := ZonesFromFragment(f)
 	if len(got) != 0 {
 		t.Errorf("ParseFragment(absent) = %+v, want empty", got)
 	}
@@ -67,10 +69,11 @@ func TestParseFragmentMissingIsEmpty(t *testing.T) {
 
 func TestParseFragmentImplicitZone(t *testing.T) {
 	path := writeTemp(t, `local-data: "solo.example.com. 300 IN A 192.0.2.1"`)
-	got, err := ParseFragment(path)
+	f, err := ParseFragment(path)
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
+	got := ZonesFromFragment(f)
 	want := []domain.Zone{{
 		Name: "solo.example.com.", Type: "transparent",
 		Records: []domain.Record{{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300}},
@@ -139,10 +142,11 @@ func TestFragmentRoundTrip(t *testing.T) {
 	if err := os.WriteFile(path, SerializeFragment(zones), 0644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := ParseFragment(path)
+	f, err := ParseFragment(path)
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
+	got := ZonesFromFragment(f)
 	if !reflect.DeepEqual(got, zones) {
 		t.Errorf("round trip =\n%+v\nwant\n%+v", got, zones)
 	}

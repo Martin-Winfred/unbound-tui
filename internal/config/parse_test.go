@@ -128,8 +128,8 @@ local-zone: "example.com" refuse
 				if err != nil {
 					t.Fatalf("ParseFragment(absent) = %v, want nil", err)
 				}
-				if got != nil {
-					t.Fatalf("ParseFragment(absent) = %+v, want nil", got)
+				if len(got.Sections) != 0 {
+					t.Fatalf("ParseFragment(absent) = %+v, want empty", got)
 				}
 				return
 			}

@@ -18,6 +18,7 @@ import (
 type Manager struct {
 	fragmentPath string
 	mainConfPath string
+	base         domain.Fragment
 }
 
 // NewManager returns a Manager for the Unbound main config at confPath.
@@ -35,10 +36,25 @@ func (m *Manager) FragmentPath() string { return m.fragmentPath }
 // without /etc write access).
 func (m *Manager) SetFragmentPath(p string) { m.fragmentPath = p }
 
-// Read parses the fragment file into the zone model. A missing file yields
-// an empty model, not an error.
+// ReadFragment parses the fragment file from disk and returns the generic
+// section/entry model, refreshing the manager's cached base model. A missing
+// file yields an empty Fragment, not an error.
+func (m *Manager) ReadFragment() (domain.Fragment, error) {
+	f, err := ParseFragment(m.fragmentPath)
+	if err != nil {
+		return domain.Fragment{}, err
+	}
+	m.base = f
+	return m.base, nil
+}
+
+// Read parses the fragment file into the zone model, projecting the freshly
+// read base Fragment. A missing file yields an empty model, not an error.
 func (m *Manager) Read() ([]domain.Zone, error) {
-	return ParseFragment(m.fragmentPath)
+	if _, err := m.ReadFragment(); err != nil {
+		return nil, err
+	}
+	return ZonesFromFragment(m.base), nil
 }
 
 // Write serializes zones and installs them atomically, creating the parent

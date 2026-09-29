@@ -71,10 +71,7 @@ type effectiveReader struct {
 // happens before the read, so a file reached twice (directly or through a
 // cycle) is parsed once.
 func (r *effectiveReader) walk(path string) error {
-	key, err := resolvedPath(path)
-	if err != nil {
-		return fmt.Errorf("resolve config %s: %w", path, err)
-	}
+	key := resolveOwn(path)
 	if r.visited[key] {
 		return nil
 	}
@@ -173,18 +170,112 @@ func isIncludeKey(key string) bool {
 	return key == "include" || key == "include-toplevel"
 }
 
-// resolvedPath returns the absolute, symlink-resolved spelling of path. When
-// the path does not exist, EvalSymlinks fails and the absolute path is used
-// instead, so the key is still usable for reporting.
-func resolvedPath(path string) (string, error) {
+// resolveOwn returns the absolute, symlink-resolved spelling of path. When the
+// path does not exist, EvalSymlinks fails and the absolute path is used
+// instead; if even Abs fails the original path is returned. This is the single
+// normalization shared by the include-graph visited keys and the Source tag on
+// every EffectiveSection, and it is also applied to FindConflicts' ownPath —
+// so two spellings of the same file (relative, symlinked) compare equal on
+// both sides instead of making our own fragment look foreign.
+func resolveOwn(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return path
 	}
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved, nil
+		return resolved
 	}
-	return abs, nil
+	return abs
+}
+
+// Conflict is one foreign forward-zone/stub-zone that collides with a section
+// of ours. Kind and Name are the foreign section's kind and normalized
+// identity name; Source is the file it was declared in, so the user can go
+// find it.
+type Conflict struct {
+	Kind   string
+	Name   string
+	Source string
+}
+
+// SectionKeyName returns the normalized identity name of a section: the value
+// of its first `name` entry, whitespace trimmed, with exactly one leading and
+// one trailing double quote stripped. A forward-zone with no usable name is
+// the root zone ".". A stub-zone or view with no usable name has no identity
+// (""), and so does any non-identity-bearing kind.
+func SectionKeyName(s domain.Section) string {
+	switch s.Kind {
+	case "forward-zone", "stub-zone", "view":
+	default:
+		return ""
+	}
+	name := ""
+	for _, e := range s.Entries {
+		if e.Key == "name" {
+			name = strings.TrimSpace(e.Value)
+			break
+		}
+	}
+	name = strings.TrimPrefix(name, `"`)
+	name = strings.TrimSuffix(name, `"`)
+	if name == "" && s.Kind == "forward-zone" {
+		return "."
+	}
+	return name
+}
+
+// FindConflicts reports every active forward-zone/stub-zone of the fragment we
+// own (f) that collides, by kind and case-insensitive identity name, with an
+// active foreign section elsewhere in the effective include graph (eff).
+//
+// Only sections with at least one active entry participate, on either side: a
+// fully disabled section is defined-but-commented and cannot clash. The
+// identity name is still read from the first name entry even when that entry
+// is disabled, because the rest of the section is active. ownPath is the
+// fragment path as the caller spells it; it is normalized with the same
+// resolver used for every Source, so our own included fragment never
+// self-conflicts. Conflicts are reported once per foreign section, in
+// effective order.
+func FindConflicts(f domain.Fragment, eff Effective, ownPath string) []Conflict {
+	own := resolveOwn(ownPath)
+
+	type identity struct{ kind, name string }
+	var ours []identity
+	for _, s := range f.Sections {
+		if !isForwardOrStub(s.Kind) || !hasActive(s.Entries) {
+			continue
+		}
+		if name := SectionKeyName(s); name != "" {
+			ours = append(ours, identity{s.Kind, name})
+		}
+	}
+	if len(ours) == 0 {
+		return nil
+	}
+
+	var out []Conflict
+	for _, fs := range eff.Sections {
+		if !isForwardOrStub(fs.Kind) || !hasActive(fs.Entries) || fs.Source == own {
+			continue
+		}
+		name := SectionKeyName(fs.Section)
+		if name == "" {
+			continue
+		}
+		for _, o := range ours {
+			if o.kind == fs.Kind && strings.EqualFold(o.name, name) {
+				out = append(out, Conflict{Kind: fs.Kind, Name: name, Source: fs.Source})
+				break
+			}
+		}
+	}
+	return out
+}
+
+// isForwardOrStub reports whether a section kind takes part in conflict
+// detection.
+func isForwardOrStub(kind string) bool {
+	return kind == "forward-zone" || kind == "stub-zone"
 }
 
 // activeIncludeLines returns the 1-based line numbers of the active include

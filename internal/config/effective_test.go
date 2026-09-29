@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -233,4 +234,170 @@ func TestReadEffectiveMalformedInclude(t *testing.T) {
 	if !strings.Contains(err.Error(), "unterminated quote") {
 		t.Errorf("error %q does not mention the tokenizer failure", err)
 	}
+}
+
+// mustReadEffective reads the include graph for a fixture or fails the test.
+func mustReadEffective(t *testing.T, path string) Effective {
+	t.Helper()
+	eff, err := ReadEffective(path)
+	if err != nil {
+		t.Fatalf("ReadEffective(%s): %v", path, err)
+	}
+	return eff
+}
+
+// mustParseFragment parses a fixture fragment or fails the test.
+func mustParseFragment(t *testing.T, path string) domain.Fragment {
+	t.Helper()
+	f, err := ParseFragment(path)
+	if err != nil {
+		t.Fatalf("ParseFragment(%s): %v", path, err)
+	}
+	return f
+}
+
+// TestSectionKeyName pins the identity normalization: the first name entry,
+// whitespace trimmed, exactly one leading and one trailing quote stripped; a
+// nameless forward-zone is the root ".", while a nameless stub/view has no
+// identity and non-identity kinds never carry one.
+func TestSectionKeyName(t *testing.T) {
+	sec := func(kind string, entries ...domain.Entry) domain.Section {
+		return domain.Section{Kind: kind, Entries: entries}
+	}
+	tests := []struct {
+		name string
+		sec  domain.Section
+		want string
+	}{
+		{"quoted name", sec("forward-zone", effEntry("name", `"example.com"`)), "example.com"},
+		{"bare name", sec("forward-zone", effEntry("name", `example.com`)), "example.com"},
+		{"one quote stripped per side", sec("forward-zone", effEntry("name", `""example"`)), `"example`},
+		{"whitespace trimmed", sec("forward-zone", effEntry("name", `  "example.com"  `)), "example.com"},
+		{"first name entry wins", sec("forward-zone", effEntry("name", `"first"`), effEntry("name", `"second"`)), "first"},
+		{"disabled name still identifies", sec("forward-zone", domain.Entry{Key: "name", Value: `"x"`, Disabled: true}, effEntry("forward-addr", "192.0.2.1")), "x"},
+		{"nameless forward-zone is root", sec("forward-zone", effEntry("forward-addr", "192.0.2.1")), "."},
+		{"nameless stub-zone has no identity", sec("stub-zone", effEntry("stub-addr", "192.0.2.1")), ""},
+		{"nameless view has no identity", sec("view", effEntry("view-first", "yes")), ""},
+		{"non-identity kind ignores name", sec("server", effEntry("name", `"x"`)), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SectionKeyName(tt.sec); got != tt.want {
+				t.Errorf("SectionKeyName(%+v) = %q, want %q", tt.sec, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFindConflicts exercises conflict detection over the include graph: a
+// forward-zone/stub-zone of ours collides with an active foreign section of
+// the same kind and identity name, sourced from a file other than our own
+// fragment. A section with no active entry never participates, on either side.
+func TestFindConflicts(t *testing.T) {
+	t.Run("same kind and name names the foreign file", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "same", "ours.conf")
+		foreign := fixturePath(t, "conflict", "same", "foreign.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "same", "main.conf")), ours)
+		want := []Conflict{{Kind: "forward-zone", Name: "conflict.example", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts() = %+v, want %+v", got, want)
+		}
+	})
+
+	// The caller may spell our fragment through a symlink while ReadEffective
+	// reports the symlink-resolved path. Both sides must normalize identically,
+	// or our own included sections would look foreign and self-conflict.
+	t.Run("symlinked ownPath does not self-conflict", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "same", "ours.conf")
+		foreign := fixturePath(t, "conflict", "same", "foreign.conf")
+		link := filepath.Join(t.TempDir(), "own-via-symlink.conf")
+		if err := os.Symlink(ours, link); err != nil {
+			t.Fatalf("symlink %s -> %s: %v", link, ours, err)
+		}
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "same", "main.conf")), link)
+		want := []Conflict{{Kind: "forward-zone", Name: "conflict.example", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts(ownPath=%s) = %+v, want only the foreign conflict %+v", link, got, want)
+		}
+	})
+
+	t.Run("fully disabled foreign section is not a conflict", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "dead", "ours.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "dead", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindConflicts() = %+v, want none (all foreign entries disabled)", got)
+		}
+	})
+
+	// A disabled name entry does not kill the section: the active-entry count
+	// decides participation, and the name is still read from that entry.
+	t.Run("disabled name with another active entry still matches", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "partial", "ours.conf")
+		foreign := fixturePath(t, "conflict", "partial", "foreign.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "partial", "main.conf")), ours)
+		want := []Conflict{{Kind: "forward-zone", Name: "partial.example", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("our fully disabled section does not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "ourdisabled", "ours.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "ourdisabled", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindConflicts() = %+v, want none (our section has no active entry)", got)
+		}
+	})
+
+	t.Run("nameless forward-zone matches root", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "nameless-fwd", "ours.conf")
+		foreign := fixturePath(t, "conflict", "nameless-fwd", "foreign.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "nameless-fwd", "main.conf")), ours)
+		want := []Conflict{{Kind: "forward-zone", Name: ".", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("nameless stub-zone has no identity", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "nameless-stub", "ours.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "nameless-stub", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindConflicts() = %+v, want none (nameless stub has no identity)", got)
+		}
+	})
+
+	t.Run("cross-kind same name does not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "crosskind", "ours.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "crosskind", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindConflicts() = %+v, want none (forward-zone vs stub-zone)", got)
+		}
+	})
+
+	t.Run("case and quote variants conflict", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "casequote", "ours.conf")
+		foreign := fixturePath(t, "conflict", "casequote", "foreign.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "casequote", "main.conf")), ours)
+		want := []Conflict{{Kind: "forward-zone", Name: "test.", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("multiple conflicts keep effective order", func(t *testing.T) {
+		ours := fixturePath(t, "conflict", "multi", "ours.conf")
+		fa := fixturePath(t, "conflict", "multi", "foreign-a.conf")
+		fb := fixturePath(t, "conflict", "multi", "foreign-b.conf")
+		fc := fixturePath(t, "conflict", "multi", "foreign-c.conf")
+		got := FindConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "conflict", "multi", "main.conf")), ours)
+		want := []Conflict{
+			{Kind: "forward-zone", Name: "b.example", Source: fb},
+			{Kind: "forward-zone", Name: "a.example", Source: fa},
+			{Kind: "stub-zone", Name: "c.example", Source: fc},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts() = %+v, want %+v", got, want)
+		}
+	})
 }

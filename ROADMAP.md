@@ -72,10 +72,10 @@ directive we do not model is passed through verbatim.
 
 ## M5 - Polish, docs, release
 
-- [ ] README / deploy: what can be managed, how, the ownership boundary, and
+- [x] README / deploy: what can be managed, how, the ownership boundary, and
       how conflicts are reported.
-- [ ] Keep CI green; align coverage (cmd / config / model).
-- [ ] Cut a tag (e.g. `v0.2.0-ea.1`); GoReleaser builds the release.
+- [x] Keep CI green; align coverage (cmd / config / model).
+- [x] Cut a tag (e.g. `v0.2.0-ea.1`); GoReleaser builds the release.
 
 ## Cross-cutting
 

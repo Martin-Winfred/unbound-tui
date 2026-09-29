@@ -2,6 +2,7 @@ package validate
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -22,6 +23,12 @@ const (
 	// TypeZone is a `name [zone-type]` line, the raw value of a local-zone
 	// entry (for example `"example.com" static`).
 	TypeZone Type = "zone"
+	// TypeUpstream is an `ip[@port][#auth]` entry, the value of a
+	// forward-addr or stub-addr upstream.
+	TypeUpstream Type = "upstream"
+	// TypeHost is a `hostname[@port]` entry, the value of a forward-host or
+	// stub-host upstream.
+	TypeHost Type = "host"
 	TypeText Type = "text"
 )
 
@@ -35,11 +42,24 @@ var zoneTypeWhitelist = map[string]bool{
 	"transparent": true, "redirect": true,
 }
 
-// schemaRegistry seeds the (section kind, entry key) -> Type map. Only the
-// two local-* directives are registered in M2; everything else is free text.
+// schemaRegistry seeds the (section kind, entry key) -> Type map. It covers
+// the local-* directives plus the forward-zone and stub-zone upstream
+// directives; everything else is free text.
 var schemaRegistry = map[[2]string]Type{
 	{"server", "local-data"}: TypeRR,
 	{"server", "local-zone"}: TypeZone,
+
+	{"forward-zone", "name"}:                 TypeText,
+	{"forward-zone", "forward-addr"}:         TypeUpstream,
+	{"forward-zone", "forward-host"}:         TypeHost,
+	{"forward-zone", "forward-tls-upstream"}: TypeBool,
+	{"forward-zone", "forward-first"}:        TypeBool,
+
+	{"stub-zone", "name"}:       TypeText,
+	{"stub-zone", "stub-addr"}:  TypeUpstream,
+	{"stub-zone", "stub-host"}:  TypeHost,
+	{"stub-zone", "stub-prime"}: TypeBool,
+	{"stub-zone", "stub-first"}: TypeBool,
 }
 
 // SchemaFor returns the schema type registered for a section kind and entry
@@ -71,6 +91,10 @@ func ValidateValue(t Type, value string) error {
 		return ValidateRRLine(value)
 	case TypeZone:
 		return validateZoneLine(value)
+	case TypeUpstream:
+		return validateUpstream(value)
+	case TypeHost:
+		return validateHostValue(value)
 	default: // TypeText and the empty Type
 		return validateText(value)
 	}
@@ -189,6 +213,70 @@ func validateZoneLine(value string) error {
 	}
 	if !zoneTypeWhitelist[typ] {
 		return fmt.Errorf("unsupported zone type %q", typ)
+	}
+	return nil
+}
+
+// validateUpstream validates an `ip[@port][#auth]` upstream address, the
+// value of a forward-addr or stub-addr entry. IPv6 literals contain colons,
+// so `#auth` is split off first and the optional port at the LAST `@`; the
+// remainder must be an IP literal.
+func validateUpstream(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("empty upstream address")
+	}
+	addr := value
+	if i := strings.IndexByte(value, '#'); i >= 0 {
+		if err := validateAuth(value[i+1:]); err != nil {
+			return err
+		}
+		addr = value[:i]
+	}
+	host := addr
+	if i := strings.LastIndexByte(addr, '@'); i >= 0 {
+		host = addr[:i]
+		if err := validatePort(addr[i+1:], value); err != nil {
+			return err
+		}
+	}
+	if net.ParseIP(host) == nil {
+		return fmt.Errorf("invalid address %q", host)
+	}
+	return nil
+}
+
+// validateAuth validates the `#auth` part of an upstream: non-empty, all
+// characters printable and no whitespace, `@` or `#`.
+func validateAuth(auth string) error {
+	if auth == "" {
+		return fmt.Errorf("invalid auth %q: empty", auth)
+	}
+	for _, r := range auth {
+		if r <= ' ' || r == 0x7f || r == '@' || r == '#' {
+			return fmt.Errorf("invalid auth %q", auth)
+		}
+	}
+	return nil
+}
+
+// validateHostValue validates a `hostname[@port]` upstream name, the value of
+// a forward-host or stub-host entry. The optional port follows the same rules
+// as an address port; the host must be a valid zone name.
+func validateHostValue(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("empty host")
+	}
+	host := value
+	if i := strings.LastIndexByte(value, '@'); i >= 0 {
+		host = value[:i]
+		if err := validatePort(value[i+1:], value); err != nil {
+			return err
+		}
+	}
+	if err := ValidateZoneName(host); err != nil {
+		return fmt.Errorf("invalid host %q: %w", host, err)
 	}
 	return nil
 }

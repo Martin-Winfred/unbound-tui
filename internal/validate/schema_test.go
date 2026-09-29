@@ -14,6 +14,16 @@ func TestSchemaFor(t *testing.T) {
 	}{
 		{"local-data is an RR line", "server", "local-data", TypeRR},
 		{"local-zone is a zone line", "server", "local-zone", TypeZone},
+		{"forward-zone name", "forward-zone", "name", TypeText},
+		{"forward-zone forward-addr", "forward-zone", "forward-addr", TypeUpstream},
+		{"forward-zone forward-host", "forward-zone", "forward-host", TypeHost},
+		{"forward-zone forward-tls-upstream", "forward-zone", "forward-tls-upstream", TypeBool},
+		{"forward-zone forward-first", "forward-zone", "forward-first", TypeBool},
+		{"stub-zone name", "stub-zone", "name", TypeText},
+		{"stub-zone stub-addr", "stub-zone", "stub-addr", TypeUpstream},
+		{"stub-zone stub-host", "stub-zone", "stub-host", TypeHost},
+		{"stub-zone stub-prime", "stub-zone", "stub-prime", TypeBool},
+		{"stub-zone stub-first", "stub-zone", "stub-first", TypeBool},
 		{"unregistered key is text", "server", "forward-addr", TypeText},
 		{"cross-kind isolation", "forward-zone", "local-data", TypeText},
 		{"empty kind and key", "", "", TypeText},
@@ -84,6 +94,27 @@ func TestValidateValue(t *testing.T) {
 		{"zone default type", TypeZone, `"example.com"`, ""},
 		{"zone bad type", TypeZone, `"example.com" bogus`, "unsupported zone type"},
 		{"zone bad name", TypeZone, `"bad name" static`, "invalid zone name"},
+
+		// upstream: IP[@port][#auth]
+		{"upstream bare ipv4", TypeUpstream, "192.0.2.53", ""},
+		{"upstream ipv4 port", TypeUpstream, "192.0.2.53@853", ""},
+		{"upstream ipv4 port auth", TypeUpstream, "192.0.2.53@853#dns.example", ""},
+		{"upstream bare ipv6", TypeUpstream, "2001:db8::1", ""},
+		{"upstream ipv6 port auth", TypeUpstream, "2001:db8::1@853#auth.name", ""},
+		{"upstream port zero", TypeUpstream, "192.0.2.53@0", "invalid port"},
+		{"upstream port too big", TypeUpstream, "192.0.2.53@70000", "invalid port"},
+		{"upstream empty auth", TypeUpstream, "192.0.2.53#", "invalid auth"},
+		{"upstream auth whitespace", TypeUpstream, "192.0.2.53#au thor", "invalid auth"},
+		{"upstream not an ip", TypeUpstream, "not a host", "invalid address"},
+		{"upstream empty", TypeUpstream, "", "empty"},
+
+		// host: hostname[@port]
+		{"host bare", TypeHost, "dns.example", ""},
+		{"host port", TypeHost, "dns.example@853", ""},
+		{"host trailing dot", TypeHost, "a.b.example.", ""},
+		{"host empty label", TypeHost, "dns..example", "invalid host"},
+		{"host port zero", TypeHost, "dns.example@0", "invalid port"},
+		{"host leading hyphen", TypeHost, "-bad.example", "invalid host"},
 
 		// text
 		{"text plain", TypeText, "hello world", ""},

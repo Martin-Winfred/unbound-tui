@@ -31,11 +31,15 @@ var _ domain.Controller = (*fakeCtl)(nil)
 func newTestModel(t *testing.T) (RootModel, *fakeCtl) {
 	t.Helper()
 	dir := t.TempDir()
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatalf("mkdir conf.d: %v", err)
+	}
 	conf := filepath.Join(dir, "unbound.conf")
-	// Mirror Debian's stub: include-toplevel with a glob. A literal include
-	// of our fragment would break the first apply, before the fragment file
-	// exists; the glob simply matches nothing until it is written.
-	if err := os.WriteFile(conf, []byte("include-toplevel: "+filepath.Join(dir, "*.conf")+"\n"), 0644); err != nil {
+	// Mirror Debian's stub: include-toplevel with a glob under conf.d, which
+	// keeps the main config from glob-including itself. A literal include of
+	// our fragment would break the first apply, before the fragment exists.
+	if err := os.WriteFile(conf, []byte("include-toplevel: "+filepath.Join(confDir, "*.conf")+"\n"), 0644); err != nil {
 		t.Fatalf("write conf: %v", err)
 	}
 	mgr, err := config.NewManager(conf)
@@ -254,13 +258,13 @@ func TestApplyRejectsInvalidModel(t *testing.T) {
 	}
 }
 
-// writeForeignConf drops a foreign config file into the test's conf directory.
-// newTestModel's main conf glob-includes every *.conf there, so the file joins
-// the effective include graph without rewriting the main conf. It returns the
+// writeForeignConf drops a foreign config file into the test's conf.d
+// directory, which newTestModel's main conf glob-includes. It returns the
 // symlink-resolved path, which is the Source FindConflicts reports.
 func writeForeignConf(t *testing.T, m RootModel, name, content string) string {
 	t.Helper()
-	p := filepath.Join(filepath.Dir(m.cfg.FragmentPath()), name)
+	confDir := filepath.Join(filepath.Dir(m.cfg.MainConfPath()), "conf.d")
+	p := filepath.Join(confDir, name)
 	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
 		t.Fatalf("write foreign %s: %v", name, err)
 	}
@@ -280,6 +284,31 @@ func forwardZone(name string) domain.Section {
 	}}
 }
 
+// writeSentinelFragment installs a valid fragment file with content distinct
+// from the in-memory model, so a refused apply can be shown to leave the file
+// byte-unchanged. The sentinel lives outside newTestModel's conf.d glob, so it
+// never joins the effective include graph.
+func writeSentinelFragment(t *testing.T, m RootModel) string {
+	t.Helper()
+	const sentinel = "server:\n  edns-buffer-size: 4096\n"
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte(sentinel), 0644); err != nil {
+		t.Fatalf("write sentinel fragment: %v", err)
+	}
+	return sentinel
+}
+
+// assertFragmentUnchanged fails unless the on-disk fragment still equals want.
+func assertFragmentUnchanged(t *testing.T, m RootModel, want string) {
+	t.Helper()
+	got, err := os.ReadFile(m.cfg.FragmentPath())
+	if err != nil {
+		t.Fatalf("read fragment after refusal: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("fragment changed on a refused apply:\n got %q\nwant %q", got, want)
+	}
+}
+
 // TestApplyRefusesIncludeGraphConflict pins the apply-time hard refusal: when a
 // forward-zone we own collides by identity with one already declared elsewhere
 // in the include graph, apply must name the foreign source and stop before any
@@ -288,6 +317,7 @@ func TestApplyRefusesIncludeGraphConflict(t *testing.T) {
 	m, ctl := newTestModel(t)
 	foreign := writeForeignConf(t, m, "foreign.conf",
 		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n")
+	sentinel := writeSentinelFragment(t, m)
 	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
 		{Kind: "server"},
 		forwardZone("dup."),
@@ -306,18 +336,18 @@ func TestApplyRefusesIncludeGraphConflict(t *testing.T) {
 	if ctl.reloads != 0 {
 		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
 	}
-	if _, err := os.Stat(m.cfg.FragmentPath()); !os.IsNotExist(err) {
-		t.Errorf("fragment file exists after a refused apply (stat err = %v)", err)
-	}
+	assertFragmentUnchanged(t, m, sentinel)
 }
 
-// TestApplyListsAllIncludeGraphConflicts pins that every collision is reported,
-// one line each, rather than only the first.
+// TestApplyListsAllIncludeGraphConflicts pins that every collision is reported
+// and joined onto a single line, so none is cut off by the status line, rather
+// than only the first.
 func TestApplyListsAllIncludeGraphConflicts(t *testing.T) {
 	m, ctl := newTestModel(t)
 	foreign := writeForeignConf(t, m, "foreign.conf",
 		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n"+
 			"forward-zone:\n  name: \"also.\"\n  forward-addr: 192.0.2.54\n")
+	sentinel := writeSentinelFragment(t, m)
 	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
 		{Kind: "server"},
 		forwardZone("dup."),
@@ -330,6 +360,9 @@ func TestApplyListsAllIncludeGraphConflicts(t *testing.T) {
 	if !ok {
 		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
 	}
+	if strings.Contains(errMsg.Error.Error(), "\n") {
+		t.Errorf("refusal error contains a newline the status line would truncate: %q", errMsg.Error.Error())
+	}
 	for _, name := range []string{"dup.", "also."} {
 		want := fmt.Sprintf("forward-zone %q already exists in %s", name, foreign)
 		if !strings.Contains(errMsg.Error.Error(), want) {
@@ -339,6 +372,117 @@ func TestApplyListsAllIncludeGraphConflicts(t *testing.T) {
 	if ctl.reloads != 0 {
 		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
 	}
+	assertFragmentUnchanged(t, m, sentinel)
+}
+
+// TestApplyConflictRefusalRendersBoth pins the UI contract behind the
+// single-line join: the refusal must reach the status line intact, with every
+// conflict visible, instead of being cut off at an embedded newline.
+func TestApplyConflictRefusalRendersBoth(t *testing.T) {
+	m, _ := newTestModel(t)
+	foreign := writeForeignConf(t, m, "foreign.conf",
+		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n"+
+			"forward-zone:\n  name: \"also.\"\n  forward-addr: 192.0.2.54\n")
+	writeSentinelFragment(t, m)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server"},
+		forwardZone("dup."),
+		forwardZone("also."),
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+
+	root := asRoot(t, mustUpdate(t, m, errMsg))
+	status := root.statusLine(400)
+	if strings.Contains(status, "\n") {
+		t.Errorf("status line contains an embedded newline, so it does not render on one row:\n%q", status)
+	}
+	for _, want := range []string{`"dup."`, `"also."`, foreign} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status line missing %q after the refusal:\n%s", want, status)
+		}
+	}
+
+	// The full screen must carry both descriptions too, with room to spare.
+	root.width, root.height = 400, 40
+	view := root.View()
+	for _, want := range []string{`"dup."`, `"also."`, foreign} {
+		if !strings.Contains(view, want) {
+			t.Errorf("rendered view missing %q after the refusal:\n%s", want, view)
+		}
+	}
+}
+
+// TestApplyCreatesFragmentWithLiteralInclude pins the documented non-Debian
+// layout: a literal include of our fragment that does not exist yet must not
+// make apply refuse forever. The first apply creates it (write + reload).
+func TestApplyCreatesFragmentWithLiteralInclude(t *testing.T) {
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "unbound.conf")
+	frag := filepath.Join(dir, "unbound-tui.conf")
+	if err := os.WriteFile(conf, []byte("include: "+frag+"\n"), 0644); err != nil {
+		t.Fatalf("write conf: %v", err)
+	}
+	mgr, err := config.NewManager(conf)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.SetFragmentPath(frag)
+	ctl := &fakeCtl{}
+	m := NewRootModel(ctl, mgr, "test")
+	m = asRoot(t, mustUpdate(t, m, m.Init()()))
+	if _, err := os.Stat(frag); !os.IsNotExist(err) {
+		t.Fatalf("fragment exists before first apply (stat err = %v)", err)
+	}
+
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m.dirty = true
+	msg := m.apply()()
+	if _, ok := msg.(AppliedMsg); !ok {
+		t.Fatalf("first apply produced %T (%v), want AppliedMsg", msg, msg)
+	}
+	if ctl.reloads != 1 {
+		t.Errorf("reloads = %d, want 1", ctl.reloads)
+	}
+	if _, err := os.Stat(frag); err != nil {
+		t.Errorf("fragment not created on the first apply: %v", err)
+	}
+}
+
+// TestApplyValidationErrorPrecedesConflict pins gate order: validateModel runs
+// before the include-graph check, so an invalid model reports its validation
+// error even when a foreign conflict also exists.
+func TestApplyValidationErrorPrecedesConflict(t *testing.T) {
+	m, _ := newTestModel(t)
+	writeForeignConf(t, m, "foreign.conf",
+		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n")
+	sentinel := writeSentinelFragment(t, m)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server"},
+		forwardZone("dup."),
+	}})
+	m.zones = []domain.Zone{{Name: "example.com.", Type: "transparent", Records: []domain.Record{
+		{Name: "www", RType: "A", Value: "not-an-ip", TTL: 300},
+	}}}
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	if !strings.Contains(errMsg.Error.Error(), "invalid A address") {
+		t.Errorf("error %q, want the validation error", errMsg.Error.Error())
+	}
+	if strings.Contains(errMsg.Error.Error(), "already exists") {
+		t.Errorf("error %q reports the conflict; validation must run first", errMsg.Error.Error())
+	}
+	assertFragmentUnchanged(t, m, sentinel)
 }
 
 // TestApplyProceedsWhenForeignNamesDiffer pins that the refusal is name-based:
@@ -369,6 +513,7 @@ func TestApplyProceedsWhenForeignNamesDiffer(t *testing.T) {
 // surfaced rather than silently written over: no write and no reload.
 func TestApplyRefusesWhenIncludeGraphUnreadable(t *testing.T) {
 	m, ctl := newTestModel(t)
+	sentinel := writeSentinelFragment(t, m)
 	if err := os.Remove(m.cfg.MainConfPath()); err != nil {
 		t.Fatalf("remove main conf: %v", err)
 	}
@@ -386,9 +531,7 @@ func TestApplyRefusesWhenIncludeGraphUnreadable(t *testing.T) {
 	if ctl.reloads != 0 {
 		t.Errorf("reloads = %d, want 0 when the include graph is unreadable", ctl.reloads)
 	}
-	if _, err := os.Stat(m.cfg.FragmentPath()); !os.IsNotExist(err) {
-		t.Errorf("fragment file exists after a refused apply (stat err = %v)", err)
-	}
+	assertFragmentUnchanged(t, m, sentinel)
 }
 
 func TestQuitWithDirtyConfirms(t *testing.T) {

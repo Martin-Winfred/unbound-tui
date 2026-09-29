@@ -86,7 +86,7 @@ func (m RootModel) Init() tea.Cmd {
 			return ErrorMsg{fmt.Errorf("read fragment: %w", err)}
 		}
 		var ups []UpstreamRow
-		if eff, err := config.ReadEffective(m.cfg.MainConfPath()); err == nil {
+		if eff, err := config.ReadEffective(m.cfg.MainConfPath(), m.cfg.FragmentPath()); err == nil {
 			ups = buildUpstreamRows(eff, m.cfg.FragmentPath())
 		}
 		return ZonesLoadedMsg{Fragment: f, Upstreams: ups}
@@ -426,7 +426,7 @@ func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 		// non-fatal and shown as a notice in that tab.
 		var ups []UpstreamRow
 		var upErr string
-		if eff, err := config.ReadEffective(cfg.MainConfPath()); err != nil {
+		if eff, err := config.ReadEffective(cfg.MainConfPath(), cfg.FragmentPath()); err != nil {
 			upErr = err.Error()
 		} else {
 			ups = buildUpstreamRows(eff, cfg.FragmentPath())
@@ -452,19 +452,19 @@ func (m RootModel) apply() tea.Cmd {
 		// declared elsewhere in the include graph (Unbound would reject the
 		// reload). A main config we cannot flatten is surfaced too, so a
 		// broken graph is not silently written over.
-		eff, err := config.ReadEffective(cfg.MainConfPath())
+		eff, err := config.ReadEffective(cfg.MainConfPath(), cfg.FragmentPath())
 		if err != nil {
 			return ErrorMsg{fmt.Errorf("read effective config: %w", err)}
 		}
 		if conflicts := config.FindConflicts(frag, eff, cfg.FragmentPath()); len(conflicts) > 0 {
-			var b strings.Builder
+			// One entry per conflict, joined onto a single line: the status
+			// line pads one row and does not split newlines, so an embedded
+			// newline would hide later conflicts.
+			lines := make([]string, len(conflicts))
 			for i, c := range conflicts {
-				if i > 0 {
-					b.WriteByte('\n')
-				}
-				fmt.Fprintf(&b, "%s %q already exists in %s", c.Kind, c.Name, c.Source)
+				lines[i] = fmt.Sprintf("%s %q already exists in %s", c.Kind, c.Name, c.Source)
 			}
-			return ErrorMsg{fmt.Errorf("cannot apply, conflicts with the include graph:\n%s", b.String())}
+			return ErrorMsg{fmt.Errorf("cannot apply, conflicts with the include graph: %s", strings.Join(lines, "; "))}
 		}
 		if err := cfg.WriteFragment(frag); err != nil {
 			return ErrorMsg{fmt.Errorf("write fragment: %w", err)}

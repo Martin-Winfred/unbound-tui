@@ -29,11 +29,17 @@ type Effective struct {
 // followed in place, with their value resolved relative to the directory of
 // the file that declares them.
 //
-// Unlike ParseFragment, the main config must exist: a missing main config, or
-// a missing literal include, is an error naming the resolved absolute path and
-// wrapping the OS error. An include value containing any of `*?[` is a glob,
-// expanded with filepath.Glob in sorted order; a glob matching nothing is
-// skipped silently, while a malformed glob is an error naming the pattern.
+// ownFragmentPath identifies our own fragment. It exists to break the first-run
+// chicken-and-egg: a literal include whose resolved target is our fragment but
+// which does not exist yet (a fresh install has not written it) is skipped
+// silently, so apply can create it. Every other missing literal include — and a
+// missing main config — is an error naming the resolved absolute path and
+// wrapping the OS error, as before. Pass "" when there is no own fragment; no
+// missing include is tolerated then.
+//
+// An include value containing any of `*?[` is a glob, expanded with
+// filepath.Glob in sorted order; a glob matching nothing is skipped silently,
+// while a malformed glob is an error naming the pattern.
 //
 // Files are deduplicated and reads are cycle-safe: a file is keyed by its
 // symlink-resolved absolute path (falling back to the absolute path when the
@@ -52,8 +58,11 @@ type Effective struct {
 // Disabled content (a `# unbound-tui:disabled` block) is passed through
 // honestly: disabled entries — including those following a disabled section
 // header — keep Disabled set. A commented-out include line is never followed.
-func ReadEffective(mainConfPath string) (Effective, error) {
+func ReadEffective(mainConfPath, ownFragmentPath string) (Effective, error) {
 	r := &effectiveReader{visited: make(map[string]bool)}
+	if ownFragmentPath != "" {
+		r.own = resolveOwn(ownFragmentPath)
+	}
 	if err := r.walk(mainConfPath); err != nil {
 		return Effective{}, err
 	}
@@ -65,6 +74,9 @@ type effectiveReader struct {
 	sections []EffectiveSection
 	files    []string
 	visited  map[string]bool
+	// own is the normalized path of our own fragment ("" when unset). A
+	// missing literal include resolving to own is skipped, not an error.
+	own string
 }
 
 // walk parses one file, inlining includes at their position. The visited check
@@ -170,6 +182,11 @@ func (r *effectiveReader) followInclude(from, dir string, line int, entry domain
 
 	target := resolve(value)
 	if _, err := os.Stat(target); err != nil {
+		// Our own fragment is allowed to be absent on a fresh install:
+		// skip it so apply can write it instead of refusing forever.
+		if os.IsNotExist(err) && r.own != "" && resolveOwn(target) == r.own {
+			return nil
+		}
 		return fmt.Errorf("%s:%d: %s %q: %w", from, line, entry.Key, target, err)
 	}
 	return r.walk(target)

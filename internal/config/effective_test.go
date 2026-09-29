@@ -44,7 +44,7 @@ func TestReadEffectiveInterleave(t *testing.T) {
 	main := fixturePath(t, "interleave", "main.conf")
 	one := fixturePath(t, "interleave", "sub", "one.conf")
 
-	got, err := ReadEffective(main)
+	got, err := ReadEffective(main, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", main, err)
 	}
@@ -68,7 +68,7 @@ func TestReadEffectiveGlob(t *testing.T) {
 	a := fixturePath(t, "glob", "glob-a.conf")
 	b := fixturePath(t, "glob", "glob-b.conf")
 
-	got, err := ReadEffective(main)
+	got, err := ReadEffective(main, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", main, err)
 	}
@@ -92,7 +92,7 @@ func TestReadEffectiveRelative(t *testing.T) {
 	main := fixturePath(t, "relative", "main.conf")
 	one := fixturePath(t, "relative", "one.conf")
 
-	got, err := ReadEffective(main)
+	got, err := ReadEffective(main, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", main, err)
 	}
@@ -114,7 +114,7 @@ func TestReadEffectiveCycle(t *testing.T) {
 	a := fixturePath(t, "cycle", "cyclic-a.conf")
 	b := fixturePath(t, "cycle", "cyclic-b.conf")
 
-	got, err := ReadEffective(a)
+	got, err := ReadEffective(a, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", a, err)
 	}
@@ -138,7 +138,7 @@ func TestReadEffectiveFilesDeduped(t *testing.T) {
 	two := fixturePath(t, "files", "sub", "two.conf")
 	nested := fixturePath(t, "files", "nested.conf")
 
-	got, err := ReadEffective(main)
+	got, err := ReadEffective(main, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", main, err)
 	}
@@ -166,7 +166,7 @@ func TestReadEffectiveDisabledPassthrough(t *testing.T) {
 	main := fixturePath(t, "disabled", "main.conf")
 	sub := fixturePath(t, "disabled", "sub", "withdisabled.conf")
 
-	got, err := ReadEffective(main)
+	got, err := ReadEffective(main, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", main, err)
 	}
@@ -190,7 +190,7 @@ func TestReadEffectiveMissingLiteral(t *testing.T) {
 	main := fixturePath(t, "missing", "main.conf")
 	target := filepath.Join(filepath.Dir(main), "nope.conf")
 
-	_, err := ReadEffective(main)
+	_, err := ReadEffective(main, "")
 	if err == nil {
 		t.Fatal("ReadEffective() = nil error, want missing-include error")
 	}
@@ -202,12 +202,44 @@ func TestReadEffectiveMissingLiteral(t *testing.T) {
 	}
 }
 
+// TestReadEffectiveMissingOwnFragment pins the first-run contract: a literal
+// include whose resolved target is our own fragment, still absent, is skipped
+// instead of erroring, so a fresh install can create its fragment on first
+// apply. A missing literal include that is not ours still errors.
+func TestReadEffectiveMissingOwnFragment(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "unbound.conf")
+	own := filepath.Join(dir, "unbound-tui.conf")
+	if err := os.WriteFile(main, []byte("include: "+own+"\n"), 0644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if _, err := os.Stat(own); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("own fragment unexpectedly exists: %v", err)
+	}
+
+	got, err := ReadEffective(main, own)
+	if err != nil {
+		t.Fatalf("ReadEffective(main, own) = %v, want nil (missing own fragment tolerated)", err)
+	}
+	if len(got.Sections) != 0 {
+		t.Errorf("ReadEffective() sections = %+v, want none from the absent fragment", got.Sections)
+	}
+	if want := []string{resolvedPath(t, main)}; !reflect.DeepEqual(got.Files, want) {
+		t.Errorf("ReadEffective() files = %+v, want only the main config %+v", got.Files, want)
+	}
+
+	// A missing literal include that is not our fragment still errors.
+	if _, err := ReadEffective(main, filepath.Join(dir, "not-ours.conf")); err == nil {
+		t.Error("ReadEffective(main, non-matching own) = nil error, want missing-include error")
+	}
+}
+
 // TestReadEffectiveMissingMain checks the top-level contract: unlike
 // ParseFragment, a missing main config is an error naming the path.
 func TestReadEffectiveMissingMain(t *testing.T) {
 	absent := filepath.Join(t.TempDir(), "absent.conf")
 
-	_, err := ReadEffective(absent)
+	_, err := ReadEffective(absent, "")
 	if err == nil {
 		t.Fatal("ReadEffective(missing main) = nil error, want error")
 	}
@@ -255,7 +287,7 @@ func TestReadEffectiveAbsoluteInclude(t *testing.T) {
 	write(g2, "forward-zone:\n  name: \"g2.\"\n")
 	write(main, "include: "+literal+"\ninclude-toplevel: \""+filepath.Join(dir, "abs-*.conf")+"\"\n")
 
-	got, err := ReadEffective(main)
+	got, err := ReadEffective(main, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", main, err)
 	}
@@ -283,7 +315,7 @@ func TestReadEffectiveAbsoluteMissing(t *testing.T) {
 		t.Fatalf("write main: %v", err)
 	}
 
-	_, err := ReadEffective(main)
+	_, err := ReadEffective(main, "")
 	if err == nil {
 		t.Fatal("ReadEffective() = nil error, want missing-include error")
 	}
@@ -300,7 +332,7 @@ func TestReadEffectiveAbsoluteMissing(t *testing.T) {
 func TestReadEffectiveMalformedInclude(t *testing.T) {
 	main := fixturePath(t, "malformed", "main.conf")
 
-	_, err := ReadEffective(main)
+	_, err := ReadEffective(main, "")
 	if err == nil {
 		t.Fatal("ReadEffective() = nil error, want malformed-include error")
 	}
@@ -315,7 +347,7 @@ func TestReadEffectiveMalformedInclude(t *testing.T) {
 // mustReadEffective reads the include graph for a fixture or fails the test.
 func mustReadEffective(t *testing.T, path string) Effective {
 	t.Helper()
-	eff, err := ReadEffective(path)
+	eff, err := ReadEffective(path, "")
 	if err != nil {
 		t.Fatalf("ReadEffective(%s): %v", path, err)
 	}

@@ -65,7 +65,45 @@ changes asks for confirmation.
 Because the tool only rewrites its own file and reloads, it cannot delete or
 alter entries it does not own.
 
-## 6. Enabling and disabling
+## 6. Conflicts and manual resolution
+
+The tool reads the whole include graph (recursively) to show what Unbound
+already serves, but it owns and writes only its own fragment. A directive that
+appears both in the graph and in our fragment is a conflict; since the tool
+never edits foreign files, resolving one is a manual step. Apply is refused
+until it is resolved.
+
+**Named sections — `forward-zone` / `stub-zone`.** These are identified by name
+(`forward-zone "smoke."`). If an active section of the same kind and name is
+declared elsewhere, apply is refused:
+
+```text
+error: cannot apply, conflicts with the include graph: forward-zone "smoke." already exists in /etc/unbound/unbound.conf.d/zz.conf
+```
+
+Fix it in the file named by the message: remove the foreign
+`forward-zone`/`stub-zone` section, or remove ours.
+
+**Singleton options — `server:` / `remote-control:`.** Unbound accepts options
+such as `verbosity`, `port`, `interface`, `control-*` and the certificate paths
+only once per section. Setting one in our fragment while a section of the same
+kind in another file sets it too is a latent conflict (the later declaration
+silently wins). Adding or editing such a key warns without blocking; apply is
+refused:
+
+```text
+error: cannot apply, conflicts with the include graph: server: verbosity already set in /etc/unbound/conf.d/zz.conf — edit that file manually (see deploy.md: Conflicts and manual resolution)
+```
+
+Distributions commonly provision `remote-control.conf` with `control-enable`,
+`control-interface`, etc. already set. To use our `remote-control:` section,
+remove the option from that file (or remove it from ours) and apply again.
+
+Warnings are advisory and never block an edit. A refusal always leaves the
+fragment byte-unchanged and performs no reload. The tool never writes outside
+its own fragment; the foreign edit is always yours to make.
+
+## 7. Enabling and disabling
 
 Disabling a zone or record does not delete it. The entry is moved to a
 commented block at the end of the fragment:
@@ -83,14 +121,14 @@ Re-enabling moves it back. Records of a disabled zone are never written as
 active `local-data`, so a disabled zone cannot spring an implicit transparent
 zone.
 
-## 7. Cross-compilation
+## 8. Cross-compilation
 
 ```sh
 GOOS=linux GOARCH=arm64 go build -o unbound-tui-linux-arm64 ./cmd/unbound-tui
 GOOS=linux GOARCH=amd64 go build -o unbound-tui-linux-amd64 ./cmd/unbound-tui
 ```
 
-## 8. Rollback
+## 9. Rollback
 
 1. Remove the `include:` line from the main config.
 2. `unbound-control reload`.

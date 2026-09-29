@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
@@ -14,7 +15,11 @@ func project(t *testing.T, src string) []domain.Zone {
 	if err != nil {
 		t.Fatalf("parseFragment: %v", err)
 	}
-	return ZonesFromFragment(f)
+	zones, err := ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
+	return zones
 }
 
 func TestZonesFromFragmentZoneWithRecords(t *testing.T) {
@@ -110,5 +115,71 @@ local-zone: "aaa.example." transparent
 	}
 	if !reflect.DeepEqual(zones, want) {
 		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
+	}
+}
+
+// TestZonesFromFragmentCaseVariantOwnership pins zone ownership under case
+// differences (plan Review Focus #4): DNS names are case-insensitive, so an
+// upper-case owner attaches to the declared zone exactly as its lower-case
+// spelling does, rather than springing an implicit zone of its own.
+func TestZonesFromFragmentCaseVariantOwnership(t *testing.T) {
+	upper := project(t, `server:
+local-zone: "example.com." transparent
+local-data: "WWW.EXAMPLE.COM. 300 IN A 192.0.2.1"
+`)
+	lower := project(t, `server:
+local-zone: "example.com." transparent
+local-data: "www.example.com. 300 IN A 192.0.2.1"
+`)
+	if len(upper) != 1 || upper[0].Name != "example.com." {
+		t.Fatalf("upper-case owner = %+v, want a single zone example.com.", upper)
+	}
+	if len(upper[0].Records) != 1 || !strings.EqualFold(upper[0].Records[0].Name, lower[0].Records[0].Name) {
+		t.Errorf("upper-case record = %+v, want relative name %q (case-insensitive)",
+			upper[0].Records, lower[0].Records[0].Name)
+	}
+}
+
+// TestZonesFromFragmentMalformedEntry pins loud failure: a known directive
+// whose value cannot be parsed is a projection error naming the section and
+// entry, never a silent drop. The Fragment model itself stays total.
+func TestZonesFromFragmentMalformedEntry(t *testing.T) {
+	tests := []struct {
+		name     string
+		src      string
+		mentions []string
+	}{
+		{
+			name:     "unterminated local-data quote",
+			src:      "server:\nlocal-data: \"broken\n",
+			mentions: []string{"local-data", "server", `"broken`},
+		},
+		{
+			name:     "too few local-data fields",
+			src:      "server:\nlocal-data: \"only.two\"\n",
+			mentions: []string{"local-data", "server", "only.two"},
+		},
+		{
+			name:     "unterminated local-zone quote",
+			src:      "server:\nlocal-zone: \"broken\n",
+			mentions: []string{"local-zone", "server", `"broken`},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := parseFragment([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("parseFragment (must stay total): %v", err)
+			}
+			zones, err := ZonesFromFragment(f)
+			if err == nil {
+				t.Fatalf("ZonesFromFragment = %+v, nil error; want error", zones)
+			}
+			for _, want := range tt.mentions {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
 	}
 }

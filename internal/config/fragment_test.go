@@ -35,7 +35,10 @@ local-data: "www.example.com. 300 IN A 192.0.2.2"
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
-	got := ZonesFromFragment(f)
+	got, err := ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
 	want := []domain.Zone{
 		{
 			Name: "example.com.", Type: "transparent",
@@ -61,7 +64,10 @@ func TestParseFragmentMissingIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFragment(absent) = %v, want nil", err)
 	}
-	got := ZonesFromFragment(f)
+	got, err := ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
 	if len(got) != 0 {
 		t.Errorf("ParseFragment(absent) = %+v, want empty", got)
 	}
@@ -73,7 +79,10 @@ func TestParseFragmentImplicitZone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
-	got := ZonesFromFragment(f)
+	got, err := ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
 	want := []domain.Zone{{
 		Name: "solo.example.com.", Type: "transparent",
 		Records: []domain.Record{{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300}},
@@ -146,7 +155,10 @@ func TestFragmentRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFragment: %v", err)
 	}
-	got := ZonesFromFragment(f)
+	got, err := ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
 	if !reflect.DeepEqual(got, zones) {
 		t.Errorf("round trip =\n%+v\nwant\n%+v", got, zones)
 	}

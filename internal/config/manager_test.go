@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
@@ -49,6 +50,20 @@ func TestManagerReadWrite(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Read = %+v, want %+v", got, want)
+	}
+}
+
+func TestManagerReadMalformed(t *testing.T) {
+	m, frag := testManager(t)
+	if err := os.WriteFile(frag, []byte("server:\nlocal-data: \"broken\n"), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+	zones, err := m.Read()
+	if err == nil {
+		t.Fatalf("Read = %+v, nil error; want projection error", zones)
+	}
+	if !strings.Contains(err.Error(), "local-data") {
+		t.Errorf("Read error %q does not name the malformed local-data entry", err)
 	}
 }
 

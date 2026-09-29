@@ -54,7 +54,7 @@ func (m *Manager) Read() ([]domain.Zone, error) {
 	if _, err := m.ReadFragment(); err != nil {
 		return nil, err
 	}
-	return ZonesFromFragment(m.base), nil
+	return ZonesFromFragment(m.base)
 }
 
 // Write serializes zones and installs them atomically, creating the parent

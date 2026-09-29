@@ -31,10 +31,11 @@ type recordDecl struct {
 // the record's owner when no declared zone covers them. Records of a disabled
 // zone are disabled too, so a disabled zone never contributes active data.
 //
-// The generic parser is total, so projection is best-effort: malformed
-// local-zone/local-data entries are skipped rather than failing the read;
-// validation flags them before any write.
-func ZonesFromFragment(f domain.Fragment) []domain.Zone {
+// The generic parser is total, but projection is not: a value that names a
+// known directive yet cannot be parsed is a projection error naming the
+// offending section and entry, never a silent drop. The Fragment itself stays
+// total, so verbatim round-trips still work.
+func ZonesFromFragment(f domain.Fragment) ([]domain.Zone, error) {
 	var (
 		zs []zoneDecl
 		rs []recordDecl
@@ -45,21 +46,32 @@ func ZonesFromFragment(f domain.Fragment) []domain.Zone {
 			case "local-zone":
 				z, err := parseZoneValue(e.Value)
 				if err != nil {
-					continue
+					return nil, fmt.Errorf("invalid local-zone entry in section %s: %q: %w",
+						sectionLabel(s.Kind), e.Value, err)
 				}
 				z.disabled = e.Disabled
 				zs = append(zs, z)
 			case "local-data":
 				r, err := parseDataValue(e.Value)
 				if err != nil {
-					continue
+					return nil, fmt.Errorf("invalid local-data entry in section %s: %q: %w",
+						sectionLabel(s.Kind), e.Value, err)
 				}
 				r.disabled = e.Disabled
 				rs = append(rs, r)
 			}
 		}
 	}
-	return attachRecords(zs, rs)
+	return attachRecords(zs, rs), nil
+}
+
+// sectionLabel renders a section kind for error messages; the synthetic
+// top-level section (empty Kind) is named explicitly.
+func sectionLabel(kind string) string {
+	if kind == "" {
+		return "top-level"
+	}
+	return kind
 }
 
 // parseZoneValue parses `"<name>" <type>` (the raw value of a local-zone
@@ -124,12 +136,7 @@ func attachRecords(zs []zoneDecl, rs []recordDecl) []domain.Zone {
 			addZone(name, "transparent", r.disabled)
 		}
 		zone := byName[name]
-		rel := r.owner
-		if r.owner == zone.Name {
-			rel = "@"
-		} else {
-			rel = strings.TrimSuffix(r.owner, "."+zone.Name)
-		}
+		rel := relativeName(r.owner, zone.Name)
 		zone.Records = append(zone.Records, domain.Record{
 			Name:     rel,
 			RType:    r.rtype,
@@ -216,14 +223,32 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 }
 
 // owningZoneName returns the longest declared zone that contains owner, or "".
+// DNS names are case-insensitive, so matching folds case; the declared zone's
+// own spelling is returned.
 func owningZoneName(owner string, zoneNames []string) string {
+	lower := strings.ToLower(owner)
 	best := ""
 	for _, z := range zoneNames {
-		if owner == z || strings.HasSuffix(owner, "."+z) {
+		zl := strings.ToLower(z)
+		if lower == zl || strings.HasSuffix(lower, "."+zl) {
 			if len(z) > len(best) {
 				best = z
 			}
 		}
 	}
 	return best
+}
+
+// relativeName renders owner relative to its owning zone, or "@" for the apex.
+// The comparison folds case so a differently-cased owner still attaches
+// cleanly; the owner's own spelling is preserved in the returned name.
+func relativeName(owner, zone string) string {
+	if strings.EqualFold(owner, zone) {
+		return "@"
+	}
+	n := len(owner) - len(zone) - 1
+	if n <= 0 {
+		return owner
+	}
+	return owner[:n]
 }

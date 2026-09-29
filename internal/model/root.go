@@ -205,6 +205,8 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfgDeleteSection()
 		case actionToggleDisabled:
 			m.cfgToggleDisabled()
+		case actionEditTTL:
+			m.cfgEditEntry()
 		}
 		return m, nil
 	}

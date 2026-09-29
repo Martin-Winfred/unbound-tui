@@ -435,11 +435,15 @@ func TestConfigDeleteSectionCancelled(t *testing.T) {
 	m = setConfigFragment(t, m, lifecycleFixture())
 	m.view = ViewConfig
 	m.cfgView = ConfigViewModel{SecCursor: 1, SecFocused: true}
+	before := m.frag
 
 	next := asRoot(t, mustUpdate(t, m, key("D")))
 	next = asRoot(t, mustUpdate(t, next, key("n")))
 	if len(next.frag.Sections) != 2 || next.state != StateReady {
 		t.Errorf("cancel changed state: sections=%d state=%v", len(next.frag.Sections), next.state)
+	}
+	if !reflect.DeepEqual(next.frag, before) {
+		t.Errorf("cancel changed the fragment: %+v", next.frag)
 	}
 }
 
@@ -460,6 +464,9 @@ func TestConfigDeleteEntry(t *testing.T) {
 		}
 		if !reflect.DeepEqual(next.frag, before) {
 			t.Errorf("fragment changed: %+v", next.frag)
+		}
+		if next.dirty {
+			t.Error("dirty = true after a skipped locked delete")
 		}
 	})
 
@@ -486,15 +493,66 @@ func TestConfigDeleteEntry(t *testing.T) {
 	})
 }
 
+func TestConfigEditEntryGuard(t *testing.T) {
+	t.Run("locked is skipped with a notice", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = setConfigFragment(t, m, lifecycleFixture())
+		m.view = ViewConfig
+		m.cfgView = ConfigViewModel{SecFocused: false, EntCursor: 0} // local-zone
+		before := m.frag
+
+		next := asRoot(t, mustUpdate(t, m, key("e")))
+		if !strings.Contains(next.notice, "locked — edit local data in the Local data view") {
+			t.Errorf("notice = %q, want the locked-entry notice", next.notice)
+		}
+		if next.state != StateReady {
+			t.Errorf("state = %v, want StateReady (no form yet)", next.state)
+		}
+		if !reflect.DeepEqual(next.frag, before) {
+			t.Errorf("fragment changed: %+v", next.frag)
+		}
+	})
+
+	t.Run("unlocked is a pinned no-op until forms land", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = setConfigFragment(t, m, lifecycleFixture())
+		m.view = ViewConfig
+		m.cfgView = ConfigViewModel{SecFocused: false, EntCursor: 2} // edns-buffer-size
+		before := m.frag
+
+		next := asRoot(t, mustUpdate(t, m, key("e")))
+		if next.notice != "entry editing is not available yet" {
+			t.Errorf("notice = %q, want the pinned placeholder notice", next.notice)
+		}
+		if next.state != StateReady {
+			t.Errorf("state = %v, want StateReady", next.state)
+		}
+		if !reflect.DeepEqual(next.frag, before) {
+			t.Errorf("fragment changed: %+v", next.frag)
+		}
+	})
+}
+
 func TestConfigSpaceSectionToggle(t *testing.T) {
 	m, _ := newTestModel(t)
-	m = setConfigFragment(t, m, lifecycleFixture())
+	// Entry 1 is a locked row that is ALREADY disabled; a section toggle must
+	// leave every locked row exactly as it was, whether enabled or disabled.
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." static`},
+			{Key: "local-data", Value: `"www.example.com. 300 IN A 192.0.2.1"`, Disabled: true},
+			{Key: "edns-buffer-size", Value: "1232"},
+		}},
+	}})
 	m.view = ViewConfig
 	m.cfgView = ConfigViewModel{SecFocused: true}
 
 	next := asRoot(t, mustUpdate(t, m, key(" ")))
-	if next.frag.Sections[0].Entries[0].Disabled || next.frag.Sections[0].Entries[1].Disabled {
-		t.Error("space left pane toggled a locked local-* entry")
+	if next.frag.Sections[0].Entries[0].Disabled {
+		t.Error("space left pane changed enabled locked entry 0")
+	}
+	if !next.frag.Sections[0].Entries[1].Disabled {
+		t.Error("space left pane flipped an already-disabled locked entry")
 	}
 	if !next.frag.Sections[0].Entries[2].Disabled {
 		t.Error("space left pane did not disable the non-locked entry")
@@ -504,6 +562,9 @@ func TestConfigSpaceSectionToggle(t *testing.T) {
 	}
 
 	back := asRoot(t, mustUpdate(t, next, key(" ")))
+	if back.frag.Sections[0].Entries[0].Disabled || !back.frag.Sections[0].Entries[1].Disabled {
+		t.Error("space left pane changed a locked entry on the second toggle")
+	}
 	if back.frag.Sections[0].Entries[2].Disabled {
 		t.Error("space left pane did not re-enable the non-locked entry")
 	}

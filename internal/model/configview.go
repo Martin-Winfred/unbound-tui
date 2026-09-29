@@ -196,6 +196,9 @@ const lockedNotice = "locked — edit local data in the Local data view"
 func (m *RootModel) refreshZones() {
 	zs, err := config.ZonesFromFragment(m.frag)
 	if err != nil {
+		// Never leave a stale projection paired with the mutated fragment;
+		// the error state already blocks apply.
+		m.zones = nil
 		m.lastError = fmt.Errorf("project fragment: %w", err)
 		m.state = StateError
 		return
@@ -253,6 +256,21 @@ func (m *RootModel) cfgDeleteEntry() {
 	m.confirmKind = "entry"
 	m.confirmZone, m.confirmRec = m.cfgView.SecCursor, m.cfgView.EntCursor
 	m.state = StateConfirm
+}
+
+// cfgEditEntry is the `e` handler. A locked local-* row is skipped with the
+// shared notice; an unlocked row is a deliberate no-op until the entry form
+// lands in Task 7, so the Config view never routes `e` to the zones view.
+func (m *RootModel) cfgEditEntry() {
+	e, ok := m.focusedEntry()
+	if !ok {
+		return
+	}
+	if isLocked(e) {
+		m.notice = lockedNotice
+		return
+	}
+	m.notice = "entry editing is not available yet"
 }
 
 // deleteEntry removes the entry at [sectionIndex][entryIndex] from frag by

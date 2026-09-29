@@ -219,6 +219,82 @@ func TestReadEffectiveMissingMain(t *testing.T) {
 	}
 }
 
+// resolvedPath returns the absolute, symlink-resolved spelling ReadEffective
+// reports for a runtime-created fixture path.
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("abs %s: %v", path, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// TestReadEffectiveAbsoluteInclude pins that an absolute include target is used
+// verbatim instead of being joined onto the declaring file's directory: both an
+// absolute literal include and an absolute include-toplevel glob must be read,
+// with the glob expanded in sorted order.
+func TestReadEffectiveAbsoluteInclude(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.conf")
+	literal := filepath.Join(dir, "literal.conf")
+	g1 := filepath.Join(dir, "abs-01.conf")
+	g2 := filepath.Join(dir, "abs-02.conf")
+
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	write(literal, "forward-zone:\n  name: \"literal.\"\n  forward-addr: 192.0.2.1\n")
+	write(g1, "forward-zone:\n  name: \"g1.\"\n")
+	write(g2, "forward-zone:\n  name: \"g2.\"\n")
+	write(main, "include: "+literal+"\ninclude-toplevel: \""+filepath.Join(dir, "abs-*.conf")+"\"\n")
+
+	got, err := ReadEffective(main)
+	if err != nil {
+		t.Fatalf("ReadEffective(%s): %v", main, err)
+	}
+	want := Effective{
+		Sections: []EffectiveSection{
+			effSec("forward-zone", resolvedPath(t, literal), effEntry("name", `"literal."`), effEntry("forward-addr", "192.0.2.1")),
+			effSec("forward-zone", resolvedPath(t, g1), effEntry("name", `"g1."`)),
+			effSec("forward-zone", resolvedPath(t, g2), effEntry("name", `"g2."`)),
+		},
+		Files: []string{resolvedPath(t, main), resolvedPath(t, literal), resolvedPath(t, g1), resolvedPath(t, g2)},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReadEffective() =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// TestReadEffectiveAbsoluteMissing checks that a missing absolute literal
+// include is an error naming that exact absolute path, not a path mangled by
+// joining it onto the declaring file's directory.
+func TestReadEffectiveAbsoluteMissing(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.conf")
+	missing := filepath.Join(dir, "nope", "absent.conf")
+	if err := os.WriteFile(main, []byte("include: "+missing+"\n"), 0644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+
+	_, err := ReadEffective(main)
+	if err == nil {
+		t.Fatal("ReadEffective() = nil error, want missing-include error")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error %v is not fs.ErrNotExist", err)
+	}
+	if !strings.Contains(err.Error(), `"`+missing+`"`) {
+		t.Errorf("error %q does not name the absolute path %q", err, missing)
+	}
+}
+
 // TestReadEffectiveMalformedInclude checks the cutToken failure path: the
 // error names the offending file and line, and wraps the tokenizer error.
 func TestReadEffectiveMalformedInclude(t *testing.T) {

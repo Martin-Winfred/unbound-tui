@@ -144,8 +144,18 @@ func (r *effectiveReader) followInclude(from, dir string, line int, entry domain
 		return fmt.Errorf("%s:%d: %s: %w", from, line, entry.Key, err)
 	}
 
+	// An absolute target is used verbatim; only relative values resolve
+	// against the declaring file's directory. filepath.Join would otherwise
+	// append an absolute value to dir (Join("/a", "/b") == "/a/b").
+	resolve := func(v string) string {
+		if filepath.IsAbs(v) {
+			return v
+		}
+		return filepath.Join(dir, v)
+	}
+
 	if strings.ContainsAny(value, "*?[") {
-		pattern := filepath.Join(dir, value)
+		pattern := resolve(value)
 		matches, err := filepath.Glob(pattern)
 		if err != nil {
 			return fmt.Errorf("%s:%d: %s glob %q: %w", from, line, entry.Key, pattern, err)
@@ -158,7 +168,7 @@ func (r *effectiveReader) followInclude(from, dir string, line int, entry domain
 		return nil
 	}
 
-	target := filepath.Join(dir, value)
+	target := resolve(value)
 	if _, err := os.Stat(target); err != nil {
 		return fmt.Errorf("%s:%d: %s %q: %w", from, line, entry.Key, target, err)
 	}

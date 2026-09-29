@@ -24,26 +24,41 @@ func SerializeFragment(f domain.Fragment) []byte {
 	// Keep the v0.1 shape: the header line followed by a blank line.
 	b.WriteString(fragmentHeader + "\n\n")
 
+	wroteBody := false
 	// The synthetic top-level section holds directives that appear before the
 	// first section header; it is written first and without a header line.
 	for _, s := range f.Sections {
-		if s.Kind == "" {
+		if s.Kind == "" && hasActive(s.Entries) {
 			writeActive(&b, s.Entries)
+			wroteBody = true
 		}
 	}
 	// Active entries of every named section, in model order. A section with no
 	// active entry is dropped from the active area (a fully-disabled section
-	// reappears in the disabled block).
+	// reappears in the disabled block), but a genuinely empty section keeps its
+	// bare header so it survives a round trip.
 	for _, s := range f.Sections {
-		if s.Kind == "" || !hasActive(s.Entries) {
+		if s.Kind == "" {
 			continue
 		}
-		b.WriteString(s.Kind + ":\n")
-		writeActive(&b, s.Entries)
+		switch {
+		case len(s.Entries) == 0:
+			b.WriteString(s.Kind + ":\n")
+			wroteBody = true
+		case hasActive(s.Entries):
+			b.WriteString(s.Kind + ":\n")
+			writeActive(&b, s.Entries)
+			wroteBody = true
+		}
 	}
 
 	if hasAnyDisabled(f.Sections) {
-		b.WriteString("\n" + disabledMarker + "\n")
+		// Separate the disabled block from the body only when a body line was
+		// written; otherwise the header's own blank line already precedes it.
+		if wroteBody {
+			b.WriteString("\n")
+		}
+		b.WriteString(disabledMarker + "\n")
 		for _, s := range f.Sections {
 			if !hasDisabled(s.Entries) {
 				continue

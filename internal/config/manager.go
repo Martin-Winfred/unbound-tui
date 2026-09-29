@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
+	"github.com/Martin-Winfred/unbound-tui/internal/validate"
 )
 
 // Manager owns the fragment file lifecycle and knows the main config path
@@ -60,10 +61,20 @@ func (m *Manager) Read() ([]domain.Zone, error) {
 // Write merges zones into the stashed base fragment and installs the result
 // atomically, creating the parent directory if needed.
 func (m *Manager) Write(zones []domain.Zone) error {
+	return m.WriteFragment(FragmentFromZones(m.base, zones))
+}
+
+// WriteFragment is the single write path for the generic fragment model. It
+// validates the fragment first, then installs it atomically (creating the
+// parent directory), so an invalid model never reaches the file.
+func (m *Manager) WriteFragment(f domain.Fragment) error {
+	if err := validate.ValidateFragment(f); err != nil {
+		return fmt.Errorf("write fragment: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(m.fragmentPath), 0755); err != nil {
 		return fmt.Errorf("create fragment dir: %w", err)
 	}
-	return atomicWriteFile(m.fragmentPath, SerializeFragment(FragmentFromZones(m.base, zones)), 0644)
+	return atomicWriteFile(m.fragmentPath, SerializeFragment(f), 0644)
 }
 
 // CheckInclude verifies (read-only) that the main config includes our

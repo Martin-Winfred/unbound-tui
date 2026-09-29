@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+
+	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
 // Type is the schema type of a configuration value. It tells the editor how
@@ -37,16 +39,6 @@ const (
 	TypePort Type = "port"
 	TypeText Type = "text"
 )
-
-// zoneTypeWhitelist is the set of local-zone types the schema accepts. It
-// intentionally mirrors the standard unbound.conf(5) set only and is kept
-// separate from config.IsZoneTypeName: config and validate must not import
-// each other (both are leaves over domain), so the short list is duplicated
-// here on purpose.
-var zoneTypeWhitelist = map[string]bool{
-	"deny": true, "refuse": true, "static": true,
-	"transparent": true, "redirect": true,
-}
 
 // accessCtrlActions is the set of actions unbound accepts in an
 // access-control value. It mirrors unbound.conf(5) and is pinned here because
@@ -293,7 +285,7 @@ func validateZoneLine(value string) error {
 	if typ == "" {
 		typ = "transparent"
 	}
-	if !zoneTypeWhitelist[typ] {
+	if !domain.IsZoneTypeName(typ) {
 		return fmt.Errorf("unsupported zone type %q", typ)
 	}
 	return nil

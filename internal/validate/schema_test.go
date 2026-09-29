@@ -191,6 +191,28 @@ func TestValidateValue(t *testing.T) {
 	}
 }
 
+// TestZoneTypeWhitelistAlignment pins that every zone type the canonical
+// domain set accepts also passes the TypeZone value check. The list is the
+// full unbound.conf(5) set; a type accepted by domain but rejected here would
+// make the editor refuse a value the tool elsewhere considers valid.
+func TestZoneTypeWhitelistAlignment(t *testing.T) {
+	canonical := []string{
+		"deny", "refuse", "static", "transparent",
+		"typetransparent", "redirect", "nodefault",
+		"inform", "inform_deny", "inform_redirect",
+		"always_transparent", "always_refuse", "always_nxdomain",
+		"always_nodata", "always_deny", "always_null", "noview",
+		"block_a", "block_aaaa", "block_a_wdata", "block_aaaa_wdata",
+	}
+	for _, typ := range canonical {
+		t.Run(typ, func(t *testing.T) {
+			if err := ValidateValue(TypeZone, `"example.com" `+typ); err != nil {
+				t.Errorf("ValidateValue(TypeZone, %q) = %v, want nil", typ, err)
+			}
+		})
+	}
+}
+
 func TestValidateRRLine(t *testing.T) {
 	tests := []struct {
 		name    string

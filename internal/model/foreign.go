@@ -2,7 +2,6 @@ package model
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -106,7 +105,7 @@ func (f *ForeignModel) setUpstreams(rows []UpstreamRow, upErr string) {
 // Source, so a fragment reached through a symlink is still recognized as ours;
 // a section is Dead when it has no active entry.
 func buildUpstreamRows(eff config.Effective, ownPath string) []UpstreamRow {
-	own := normalizeSourcePath(ownPath)
+	own := config.ResolvePath(ownPath)
 	var out []UpstreamRow
 	for _, s := range eff.Sections {
 		if s.Kind != "forward-zone" && s.Kind != "stub-zone" {
@@ -120,7 +119,7 @@ func buildUpstreamRows(eff config.Effective, ownPath string) []UpstreamRow {
 			Name:    config.SectionKeyName(s.Section),
 			Source:  s.Source,
 			Entries: len(s.Entries),
-			Dead:    !hasActiveEntries(s.Entries),
+			Dead:    !config.HasActiveEntries(s.Entries),
 		})
 	}
 	return out
@@ -136,7 +135,7 @@ func buildUpstreamRows(eff config.Effective, ownPath string) []UpstreamRow {
 // symlink is still recognized as ours. It is the add-time warning snapshot: a
 // miss means no warning.
 func buildScalarIndex(eff config.Effective, ownPath string) map[[2]string][]string {
-	own := normalizeSourcePath(ownPath)
+	own := config.ResolvePath(ownPath)
 	out := make(map[[2]string][]string)
 	for _, s := range eff.Sections {
 		if s.Kind != "server" && s.Kind != "remote-control" {
@@ -162,33 +161,6 @@ func buildScalarIndex(eff config.Effective, ownPath string) map[[2]string][]stri
 func containsString(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// normalizeSourcePath mirrors config's unexported resolveOwn (absolute,
-// symlinks resolved, falling back to the absolute path when the file does not
-// exist yet). It keeps buildUpstreamRows' comparison in lockstep with the
-// Source tags ReadEffective emits. Only the exported config API is used to
-// derive rows; this local copy exists because the resolver is private.
-func normalizeSourcePath(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
-	}
-	return abs
-}
-
-// hasActiveEntries reports whether entries holds at least one enabled
-// directive. It mirrors config's private helper for the Dead flag.
-func hasActiveEntries(entries []domain.Entry) bool {
-	for _, e := range entries {
-		if !e.Disabled {
 			return true
 		}
 	}

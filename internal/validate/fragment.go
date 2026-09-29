@@ -63,12 +63,13 @@ func ValidateFragment(f domain.Fragment) error {
 }
 
 // sectionName returns the identity of a section: the value of its first `name`
-// entry with surrounding double quotes trimmed. ok is false when the section
+// entry normalized through domain.NormalizeName (whitespace trimmed, one
+// leading and one trailing quote stripped). ok is false when the section
 // declares no name.
 func sectionName(s domain.Section) (string, bool) {
 	for _, e := range s.Entries {
 		if e.Key == "name" {
-			return strings.Trim(e.Value, `"`), true
+			return domain.NormalizeName(e.Value), true
 		}
 	}
 	return "", false

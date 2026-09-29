@@ -61,7 +61,7 @@ type Effective struct {
 func ReadEffective(mainConfPath, ownFragmentPath string) (Effective, error) {
 	r := &effectiveReader{visited: make(map[string]bool)}
 	if ownFragmentPath != "" {
-		r.own = resolveOwn(ownFragmentPath)
+		r.own = ResolvePath(ownFragmentPath)
 	}
 	if err := r.walk(mainConfPath); err != nil {
 		return Effective{}, err
@@ -83,7 +83,7 @@ type effectiveReader struct {
 // happens before the read, so a file reached twice (directly or through a
 // cycle) is parsed once.
 func (r *effectiveReader) walk(path string) error {
-	key := resolveOwn(path)
+	key := ResolvePath(path)
 	if r.visited[key] {
 		return nil
 	}
@@ -184,7 +184,7 @@ func (r *effectiveReader) followInclude(from, dir string, line int, entry domain
 	if _, err := os.Stat(target); err != nil {
 		// Our own fragment is allowed to be absent on a fresh install:
 		// skip it so apply can write it instead of refusing forever.
-		if os.IsNotExist(err) && r.own != "" && resolveOwn(target) == r.own {
+		if os.IsNotExist(err) && r.own != "" && ResolvePath(target) == r.own {
 			return nil
 		}
 		return fmt.Errorf("%s:%d: %s %q: %w", from, line, entry.Key, target, err)
@@ -197,14 +197,14 @@ func isIncludeKey(key string) bool {
 	return key == "include" || key == "include-toplevel"
 }
 
-// resolveOwn returns the absolute, symlink-resolved spelling of path. When the
+// ResolvePath returns the absolute, symlink-resolved spelling of path. When the
 // path does not exist, EvalSymlinks fails and the absolute path is used
 // instead; if even Abs fails the original path is returned. This is the single
 // normalization shared by the include-graph visited keys and the Source tag on
 // every EffectiveSection, and it is also applied to FindConflicts' ownPath —
 // so two spellings of the same file (relative, symlinked) compare equal on
 // both sides instead of making our own fragment look foreign.
-func resolveOwn(path string) string {
+func ResolvePath(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return path
@@ -213,6 +213,19 @@ func resolveOwn(path string) string {
 		return resolved
 	}
 	return abs
+}
+
+// HasActiveEntries reports whether entries holds at least one enabled
+// directive. It is the single active-entry predicate shared by the serializer,
+// conflict detection and the model's foreign views; a fully disabled section
+// is defined-but-commented and never participates.
+func HasActiveEntries(entries []domain.Entry) bool {
+	for _, e := range entries {
+		if !e.Disabled {
+			return true
+		}
+	}
+	return false
 }
 
 // Conflict is one foreign forward-zone/stub-zone that collides with a section
@@ -226,10 +239,11 @@ type Conflict struct {
 }
 
 // SectionKeyName returns the normalized identity name of a section: the value
-// of its first `name` entry, whitespace trimmed, with exactly one leading and
-// one trailing double quote stripped. A forward-zone with no usable name is
-// the root zone ".". A stub-zone or view with no usable name has no identity
-// (""), and so does any non-identity-bearing kind.
+// of its first `name` entry, normalized through domain.NormalizeName
+// (whitespace trimmed, one leading and one trailing double quote stripped). A
+// forward-zone with no usable name is the root zone ".". A stub-zone or view
+// with no usable name has no identity (""), and so does any non-identity-bearing
+// kind.
 func SectionKeyName(s domain.Section) string {
 	switch s.Kind {
 	case "forward-zone", "stub-zone", "view":
@@ -239,12 +253,10 @@ func SectionKeyName(s domain.Section) string {
 	name := ""
 	for _, e := range s.Entries {
 		if e.Key == "name" {
-			name = strings.TrimSpace(e.Value)
+			name = domain.NormalizeName(e.Value)
 			break
 		}
 	}
-	name = strings.TrimPrefix(name, `"`)
-	name = strings.TrimSuffix(name, `"`)
 	if name == "" && s.Kind == "forward-zone" {
 		return "."
 	}
@@ -264,12 +276,12 @@ func SectionKeyName(s domain.Section) string {
 // self-conflicts. Conflicts are reported once per foreign section, in
 // effective order.
 func FindConflicts(f domain.Fragment, eff Effective, ownPath string) []Conflict {
-	own := resolveOwn(ownPath)
+	own := ResolvePath(ownPath)
 
 	type identity struct{ kind, name string }
 	var ours []identity
 	for _, s := range f.Sections {
-		if !isForwardOrStub(s.Kind) || !hasActive(s.Entries) {
+		if !isForwardOrStub(s.Kind) || !HasActiveEntries(s.Entries) {
 			continue
 		}
 		if name := SectionKeyName(s); name != "" {
@@ -282,7 +294,7 @@ func FindConflicts(f domain.Fragment, eff Effective, ownPath string) []Conflict 
 
 	var out []Conflict
 	for _, fs := range eff.Sections {
-		if !isForwardOrStub(fs.Kind) || !hasActive(fs.Entries) || fs.Source == own {
+		if !isForwardOrStub(fs.Kind) || !HasActiveEntries(fs.Entries) || fs.Source == own {
 			continue
 		}
 		name := SectionKeyName(fs.Section)
@@ -355,7 +367,7 @@ func isScalarKind(kind string) bool {
 // at most one conflict per key. Conflicts are reported in effective order,
 // with a section's keys in entry order, so the result is stable.
 func FindScalarConflicts(f domain.Fragment, eff Effective, ownPath string) []ScalarConflict {
-	own := resolveOwn(ownPath)
+	own := ResolvePath(ownPath)
 
 	// ours is the set of (kind, key) singleton pairs we actively set.
 	ours := make(map[[2]string]bool)
@@ -375,7 +387,7 @@ func FindScalarConflicts(f domain.Fragment, eff Effective, ownPath string) []Sca
 
 	var out []ScalarConflict
 	for _, fs := range eff.Sections {
-		if !isScalarKind(fs.Kind) || !hasActive(fs.Entries) || fs.Source == own {
+		if !isScalarKind(fs.Kind) || !HasActiveEntries(fs.Entries) || fs.Source == own {
 			continue
 		}
 		seen := make(map[string]bool)

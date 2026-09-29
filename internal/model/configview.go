@@ -66,6 +66,8 @@ func entryLabel(e domain.Entry) string {
 
 // sectionName returns the section's display name: the value of its "name"
 // entry (the identity directive of forward-zone/stub-zone/view), if present.
+// The raw value is shown verbatim (quotes included); identity-bearing callers
+// use config.SectionKeyName for the normalized spelling.
 func sectionName(s domain.Section) (string, bool) {
 	for _, e := range s.Entries {
 		if e.Key == "name" {

@@ -397,6 +397,70 @@ func TestSectionKeyName(t *testing.T) {
 	}
 }
 
+// TestResolvePath pins the exported path normalizer: absolute + symlink
+// resolved when the file exists, falling back to the absolute spelling when
+// EvalSymlinks cannot resolve it (for example a not-yet-written fragment).
+func TestResolvePath(t *testing.T) {
+	t.Run("symlink resolves to its target", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target.conf")
+		if err := os.WriteFile(target, []byte("server:\n"), 0o644); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		link := filepath.Join(dir, "link.conf")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		want, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			t.Fatalf("EvalSymlinks(target): %v", err)
+		}
+		if got := ResolvePath(link); got != want {
+			t.Errorf("ResolvePath(%q) = %q, want %q", link, got, want)
+		}
+	})
+
+	t.Run("missing path falls back to absolute", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "not-yet-written.conf")
+		want, err := filepath.Abs(missing)
+		if err != nil {
+			t.Fatalf("Abs: %v", err)
+		}
+		if got := ResolvePath(missing); got != want {
+			t.Errorf("ResolvePath(%q) = %q, want %q", missing, got, want)
+		}
+	})
+
+	t.Run("relative path becomes absolute", func(t *testing.T) {
+		got := ResolvePath("effective_test.go")
+		if !filepath.IsAbs(got) {
+			t.Errorf("ResolvePath(relative) = %q, want an absolute path", got)
+		}
+	})
+}
+
+// TestHasActiveEntries pins the exported active-entry helper: a section with at
+// least one enabled entry is active, a fully disabled or empty one is not.
+func TestHasActiveEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []domain.Entry
+		want    bool
+	}{
+		{"nil", nil, false},
+		{"empty", []domain.Entry{}, false},
+		{"all disabled", []domain.Entry{{Key: "a", Disabled: true}}, false},
+		{"one active", []domain.Entry{{Key: "a", Disabled: true}, {Key: "b"}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasActiveEntries(tt.entries); got != tt.want {
+				t.Errorf("HasActiveEntries(%+v) = %v, want %v", tt.entries, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestFindConflicts exercises conflict detection over the include graph: a
 // forward-zone/stub-zone of ours collides with an active foreign section of
 // the same kind and identity name, sourced from a file other than our own

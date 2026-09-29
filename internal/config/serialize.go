@@ -35,7 +35,7 @@ func SerializeFragment(f domain.Fragment) []byte {
 	// The synthetic top-level section holds directives that appear before the
 	// first section header; it is written first and without a header line.
 	for _, s := range f.Sections {
-		if s.Kind == "" && hasActive(s.Entries) {
+		if s.Kind == "" && HasActiveEntries(s.Entries) {
 			writeActive(&b, s.Entries)
 			wroteBody = true
 		}
@@ -52,7 +52,7 @@ func SerializeFragment(f domain.Fragment) []byte {
 		case len(s.Entries) == 0:
 			b.WriteString(s.Kind + ":\n")
 			wroteBody = true
-		case hasActive(s.Entries):
+		case HasActiveEntries(s.Entries):
 			b.WriteString(s.Kind + ":\n")
 			writeActive(&b, s.Entries)
 			wroteBody = true
@@ -91,16 +91,6 @@ func writeActive(b *strings.Builder, entries []domain.Entry) {
 		}
 		b.WriteString(e.Key + ": " + e.Value + "\n")
 	}
-}
-
-// hasActive reports whether entries contains at least one enabled entry.
-func hasActive(entries []domain.Entry) bool {
-	for _, e := range entries {
-		if !e.Disabled {
-			return true
-		}
-	}
-	return false
 }
 
 // hasDisabled reports whether entries contains at least one disabled entry.

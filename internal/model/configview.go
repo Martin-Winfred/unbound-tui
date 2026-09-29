@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Martin-Winfred/unbound-tui/internal/config"
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
@@ -20,6 +21,17 @@ type ConfigViewModel struct {
 // marker; Task 6 reuses this to skip mutating keys on them.
 func isLocked(e domain.Entry) bool {
 	return e.Key == "local-zone" || e.Key == "local-data"
+}
+
+// sectionHasLocked reports whether a section holds any locked local-* entry,
+// which makes it ineligible for deletion.
+func sectionHasLocked(s domain.Section) bool {
+	for _, e := range s.Entries {
+		if isLocked(e) {
+			return true
+		}
+	}
+	return false
 }
 
 // sectionLabel renders one section-list row: the header kind, the section's
@@ -107,6 +119,16 @@ func (m RootModel) focusedSectionEntryCount() int {
 	return 0
 }
 
+// focusedEntry returns the entry under the entries cursor within the selected
+// section.
+func (m RootModel) focusedEntry() (domain.Entry, bool) {
+	s, ok := m.focusedSection()
+	if !ok || m.cfgView.EntCursor < 0 || m.cfgView.EntCursor >= len(s.Entries) {
+		return domain.Entry{}, false
+	}
+	return s.Entries[m.cfgView.EntCursor], true
+}
+
 // clampCfgCursors keeps both Config cursors inside their panes and keeps the
 // entry cursor inside the section under the section cursor. It is safe on
 // empty panes (both cursors settle on the zero value).
@@ -159,6 +181,150 @@ func (m *RootModel) cfgBottom() {
 // cfgPage moves the focused pane by one page (delta: +1 down, -1 up).
 func (m *RootModel) cfgPage(delta int) {
 	m.cfgMove(delta * m.pageSize())
+}
+
+// --- Config-view mutations ---
+
+// lockedNotice is the one status-bar wording for a mutating key aimed at a
+// locked local-* row; `space`, `d` and the section guard all reuse it.
+const lockedNotice = "locked — edit local data in the Local data view"
+
+// refreshZones re-projects the zones model the Local data view renders from
+// frag. Projection is not total: a malformed local-* entry moves the model
+// into StateError loudly rather than being silently dropped, mirroring the
+// ZonesLoadedMsg handler.
+func (m *RootModel) refreshZones() {
+	zs, err := config.ZonesFromFragment(m.frag)
+	if err != nil {
+		m.lastError = fmt.Errorf("project fragment: %w", err)
+		m.state = StateError
+		return
+	}
+	m.zones = zs
+	m.clampCursors()
+}
+
+// cfgDeleteSection is the `D` handler. It refuses a section that holds any
+// locked local-* entry (status notice, no confirmation) and otherwise starts a
+// "section" confirmation. Only the focused sections pane acts.
+func (m *RootModel) cfgDeleteSection() {
+	if !m.cfgView.SecFocused {
+		return
+	}
+	s, ok := m.focusedSection()
+	if !ok {
+		return
+	}
+	if sectionHasLocked(s) {
+		m.notice = "local data belongs to the Local data view"
+		return
+	}
+	m.confirmKind, m.confirmZone = "section", m.cfgView.SecCursor
+	m.state = StateConfirm
+}
+
+// deleteSection removes the section at index from frag by index — so a
+// duplicate named sibling is left untouched — then refreshes the projection.
+func (m *RootModel) deleteSection(index int) {
+	if index < 0 || index >= len(m.frag.Sections) {
+		return
+	}
+	m.frag.Sections = append(m.frag.Sections[:index], m.frag.Sections[index+1:]...)
+	m.refreshZones()
+	m.clampCfgCursors()
+	m.dirty = true
+}
+
+// cfgDeleteEntry is the `d` handler. Locked local-* rows are skipped with a
+// notice; an unlocked entry starts an "entry" confirmation. Only the focused
+// entries pane acts.
+func (m *RootModel) cfgDeleteEntry() {
+	if m.cfgView.SecFocused {
+		return
+	}
+	e, ok := m.focusedEntry()
+	if !ok {
+		return
+	}
+	if isLocked(e) {
+		m.notice = lockedNotice
+		return
+	}
+	m.confirmKind = "entry"
+	m.confirmZone, m.confirmRec = m.cfgView.SecCursor, m.cfgView.EntCursor
+	m.state = StateConfirm
+}
+
+// deleteEntry removes the entry at [sectionIndex][entryIndex] from frag by
+// index, then refreshes the projection.
+func (m *RootModel) deleteEntry(sectionIndex, entryIndex int) {
+	if sectionIndex < 0 || sectionIndex >= len(m.frag.Sections) {
+		return
+	}
+	entries := m.frag.Sections[sectionIndex].Entries
+	if entryIndex < 0 || entryIndex >= len(entries) {
+		return
+	}
+	m.frag.Sections[sectionIndex].Entries = append(entries[:entryIndex], entries[entryIndex+1:]...)
+	m.refreshZones()
+	m.clampCfgCursors()
+	m.dirty = true
+}
+
+// cfgToggleDisabled is the `space` handler: the sections pane toggles every
+// non-locked entry of the selected section, the entries pane toggles the one
+// entry under the cursor. Locked local-* entries never change.
+func (m *RootModel) cfgToggleDisabled() {
+	if m.cfgView.SecFocused {
+		m.cfgToggleSection()
+		return
+	}
+	m.cfgToggleEntry()
+}
+
+// cfgToggleSection inverts every non-locked entry of the selected section. A
+// section with no non-locked entries only produces a notice.
+func (m *RootModel) cfgToggleSection() {
+	i := m.cfgView.SecCursor
+	if i < 0 || i >= len(m.frag.Sections) {
+		return
+	}
+	entries := m.frag.Sections[i].Entries
+	toggled := false
+	for j := range entries {
+		if isLocked(entries[j]) {
+			continue
+		}
+		entries[j].Disabled = !entries[j].Disabled
+		toggled = true
+	}
+	if !toggled {
+		m.notice = lockedNotice
+		return
+	}
+	m.dirty = true
+	m.refreshZones()
+}
+
+// cfgToggleEntry inverts the entry under the entries cursor, or notices and
+// does nothing when it is locked.
+func (m *RootModel) cfgToggleEntry() {
+	i := m.cfgView.SecCursor
+	if i < 0 || i >= len(m.frag.Sections) {
+		return
+	}
+	j := m.cfgView.EntCursor
+	if j < 0 || j >= len(m.frag.Sections[i].Entries) {
+		return
+	}
+	e := &m.frag.Sections[i].Entries[j]
+	if isLocked(*e) {
+		m.notice = lockedNotice
+		return
+	}
+	e.Disabled = !e.Disabled
+	m.dirty = true
+	m.refreshZones()
 }
 
 // --- Config-view rendering ---

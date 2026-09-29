@@ -1,11 +1,13 @@
 package model
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Martin-Winfred/unbound-tui/internal/config"
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
@@ -334,5 +336,296 @@ func TestConfigCursorsClampOnReload(t *testing.T) {
 	}
 	if m.cfgView.EntCursor != 1 {
 		t.Errorf("EntCursor = %d, want 1", m.cfgView.EntCursor)
+	}
+}
+
+// --- Task 6: section/entry lifecycle and guards ---
+
+// setConfigFragment installs a fragment and brings the zones projection and
+// the config cursors in sync, mirroring what startup does.
+func setConfigFragment(t *testing.T, m RootModel, f domain.Fragment) RootModel {
+	t.Helper()
+	m.frag = f
+	m.refreshZones()
+	m.clampCfgCursors()
+	return m
+}
+
+// hasEntry reports whether the fragment holds a key/value entry anywhere.
+func hasEntry(f domain.Fragment, key, value string) bool {
+	for _, s := range f.Sections {
+		for _, e := range s.Entries {
+			if e.Key == key && e.Value == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// lifecycleFixture packs a locked server section (two local rows plus one
+// unlocked row) and a clean named section.
+func lifecycleFixture() domain.Fragment {
+	return domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." static`},
+			{Key: "local-data", Value: `"www.example.com. 300 IN A 192.0.2.1"`},
+			{Key: "edns-buffer-size", Value: "1232"},
+		}},
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: `"."`},
+			{Key: "forward-addr", Value: "192.0.2.53"},
+		}},
+	}}
+}
+
+func TestConfigDeleteSectionRefusesLocked(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, lifecycleFixture())
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecFocused: true}
+	before := m.frag
+
+	next := asRoot(t, mustUpdate(t, m, key("D")))
+	if next.state == StateConfirm {
+		t.Fatal("D on a locked section entered the confirm state")
+	}
+	if !strings.Contains(next.notice, "local data belongs to the Local data view") {
+		t.Errorf("notice = %q, want the locked-section guard notice", next.notice)
+	}
+	if !reflect.DeepEqual(next.frag, before) {
+		t.Errorf("fragment changed: %+v", next.frag)
+	}
+	if next.dirty {
+		t.Error("dirty = true after a refused section delete")
+	}
+}
+
+func TestConfigDeleteSectionConfirmed(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, lifecycleFixture())
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecCursor: 1, SecFocused: true}
+
+	next := asRoot(t, mustUpdate(t, m, key("D")))
+	if next.state != StateConfirm || next.confirmKind != "section" {
+		t.Fatalf("state/kind = %v/%q, want StateConfirm/section", next.state, next.confirmKind)
+	}
+	next = asRoot(t, mustUpdate(t, next, key("y")))
+	if len(next.frag.Sections) != 1 || next.frag.Sections[0].Kind != "server" {
+		t.Fatalf("sections = %+v, want only the server section", next.frag.Sections)
+	}
+	if !next.dirty {
+		t.Error("dirty = false after deleting a section")
+	}
+	if next.cfgView.SecCursor != 0 {
+		t.Errorf("SecCursor = %d, want 0 (clamped)", next.cfgView.SecCursor)
+	}
+	want, err := config.ZonesFromFragment(next.frag)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
+	if !reflect.DeepEqual(next.zones, want) {
+		t.Errorf("zones = %+v, want %+v (projection refreshed)", next.zones, want)
+	}
+}
+
+func TestConfigDeleteSectionCancelled(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, lifecycleFixture())
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecCursor: 1, SecFocused: true}
+
+	next := asRoot(t, mustUpdate(t, m, key("D")))
+	next = asRoot(t, mustUpdate(t, next, key("n")))
+	if len(next.frag.Sections) != 2 || next.state != StateReady {
+		t.Errorf("cancel changed state: sections=%d state=%v", len(next.frag.Sections), next.state)
+	}
+}
+
+func TestConfigDeleteEntry(t *testing.T) {
+	t.Run("locked is skipped with a notice", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = setConfigFragment(t, m, lifecycleFixture())
+		m.view = ViewConfig
+		m.cfgView = ConfigViewModel{SecFocused: false}
+		before := m.frag
+
+		next := asRoot(t, mustUpdate(t, m, key("d")))
+		if next.state == StateConfirm {
+			t.Fatal("d on a locked entry entered the confirm state")
+		}
+		if !strings.Contains(next.notice, "locked — edit local data in the Local data view") {
+			t.Errorf("notice = %q, want the locked-entry notice", next.notice)
+		}
+		if !reflect.DeepEqual(next.frag, before) {
+			t.Errorf("fragment changed: %+v", next.frag)
+		}
+	})
+
+	t.Run("unlocked confirms then removes", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = setConfigFragment(t, m, lifecycleFixture())
+		m.view = ViewConfig
+		m.cfgView = ConfigViewModel{SecFocused: false, EntCursor: 2} // edns-buffer-size
+
+		next := asRoot(t, mustUpdate(t, m, key("d")))
+		if next.state != StateConfirm || next.confirmKind != "entry" {
+			t.Fatalf("state/kind = %v/%q, want StateConfirm/entry", next.state, next.confirmKind)
+		}
+		next = asRoot(t, mustUpdate(t, next, key("y")))
+		if hasEntry(next.frag, "edns-buffer-size", "1232") {
+			t.Error("entry still present after a confirmed delete")
+		}
+		if !next.dirty {
+			t.Error("dirty = false after deleting an entry")
+		}
+		if next.cfgView.EntCursor != 1 {
+			t.Errorf("EntCursor = %d, want 1 (clamped)", next.cfgView.EntCursor)
+		}
+	})
+}
+
+func TestConfigSpaceSectionToggle(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, lifecycleFixture())
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecFocused: true}
+
+	next := asRoot(t, mustUpdate(t, m, key(" ")))
+	if next.frag.Sections[0].Entries[0].Disabled || next.frag.Sections[0].Entries[1].Disabled {
+		t.Error("space left pane toggled a locked local-* entry")
+	}
+	if !next.frag.Sections[0].Entries[2].Disabled {
+		t.Error("space left pane did not disable the non-locked entry")
+	}
+	if !next.dirty {
+		t.Error("dirty = false after a section toggle")
+	}
+
+	back := asRoot(t, mustUpdate(t, next, key(" ")))
+	if back.frag.Sections[0].Entries[2].Disabled {
+		t.Error("space left pane did not re-enable the non-locked entry")
+	}
+}
+
+func TestConfigSpaceAllLockedSectionNotices(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." static`},
+		}},
+	}})
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecFocused: true}
+
+	next := asRoot(t, mustUpdate(t, m, key(" ")))
+	if !strings.Contains(next.notice, "locked — edit local data in the Local data view") {
+		t.Errorf("notice = %q, want the locked-entry notice", next.notice)
+	}
+	if next.dirty {
+		t.Error("dirty = true with no non-locked entry to toggle")
+	}
+}
+
+func TestConfigSpaceEntryToggle(t *testing.T) {
+	t.Run("unlocked toggles", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = setConfigFragment(t, m, lifecycleFixture())
+		m.view = ViewConfig
+		m.cfgView = ConfigViewModel{SecFocused: false, EntCursor: 2}
+
+		next := asRoot(t, mustUpdate(t, m, key(" ")))
+		if !next.frag.Sections[0].Entries[2].Disabled {
+			t.Error("space right pane did not disable the entry")
+		}
+		if !next.dirty {
+			t.Error("dirty = false after an entry toggle")
+		}
+	})
+
+	t.Run("locked is skipped with a notice", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = setConfigFragment(t, m, lifecycleFixture())
+		m.view = ViewConfig
+		m.cfgView = ConfigViewModel{SecFocused: false, EntCursor: 0} // local-zone
+
+		next := asRoot(t, mustUpdate(t, m, key(" ")))
+		if !strings.Contains(next.notice, "locked — edit local data in the Local data view") {
+			t.Errorf("notice = %q, want the locked-entry notice", next.notice)
+		}
+		if next.frag.Sections[0].Entries[0].Disabled {
+			t.Error("space right pane toggled a locked local-* entry")
+		}
+		if next.dirty {
+			t.Error("dirty = true after a skipped locked toggle")
+		}
+	})
+}
+
+func TestConfigDuplicateSectionsDeleteByIndex(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: `"."`},
+			{Key: "forward-addr", Value: "1.1.1.1"},
+		}},
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: `"."`},
+			{Key: "forward-addr", Value: "8.8.8.8"},
+		}},
+	}})
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecCursor: 1, SecFocused: true}
+
+	next := asRoot(t, mustUpdate(t, m, key("D")))
+	next = asRoot(t, mustUpdate(t, next, key("y")))
+	if len(next.frag.Sections) != 1 {
+		t.Fatalf("sections = %+v, want one sibling left", next.frag.Sections)
+	}
+	if !hasEntry(next.frag, "forward-addr", "1.1.1.1") {
+		t.Error("the first duplicate section was disturbed")
+	}
+	if hasEntry(next.frag, "forward-addr", "8.8.8.8") {
+		t.Error("the second duplicate section was not deleted")
+	}
+}
+
+// TestConfigEntryEditKeepsZonesProjection pins that a Config-view entry
+// mutation leaves the Local data projection refreshed and consistent (the
+// locked local-* rows are untouched, so the projected zone survives).
+func TestConfigEntryEditKeepsZonesProjection(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = setConfigFragment(t, m, lifecycleFixture())
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecFocused: false, EntCursor: 2}
+
+	next := asRoot(t, mustUpdate(t, m, key(" ")))
+	if !next.frag.Sections[0].Entries[2].Disabled {
+		t.Fatal("entry edit did not land in frag")
+	}
+	want, err := config.ZonesFromFragment(next.frag)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
+	if !reflect.DeepEqual(next.zones, want) {
+		t.Errorf("zones = %+v, want %+v", next.zones, want)
+	}
+	if len(next.zones) != 1 || len(next.zones[0].Records) != 1 {
+		t.Errorf("zones = %+v, want the locked local data intact", next.zones)
+	}
+}
+
+// TestConfigRefreshZonesSurfacesProjectionError pins the loud error path: a
+// hand-broken local-* entry must never be silently swallowed.
+func TestConfigRefreshZonesSurfacesProjectionError(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.frag = domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "local-zone", Value: `"unterminated`}}},
+	}}
+
+	m.refreshZones()
+	if m.state != StateError || m.lastError == nil {
+		t.Errorf("state/error = %v/%v, want StateError and a non-nil error", m.state, m.lastError)
 	}
 }

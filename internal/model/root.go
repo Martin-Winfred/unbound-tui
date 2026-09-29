@@ -49,8 +49,10 @@ type RootModel struct {
 
 	form RecordForm
 
-	// delete/quit confirmation context
-	confirmKind string // "zone", "record" or "quit"
+	// delete/quit confirmation context; kinds: "zone", "record",
+	// "section", "entry", "quit". For "entry", confirmZone holds the
+	// section index and confirmRec the entry index.
+	confirmKind string
 	confirmZone int
 	confirmRec  int
 
@@ -179,8 +181,8 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// The Config view routes movement and focus to its own panes; the
-	// lifecycle keys land in Task 6/7.
+	// The Config view routes movement, focus and its own lifecycle keys
+	// (d/D/space) to its panes; a/e land in Task 7.
 	if m.view == ViewConfig {
 		switch action {
 		case actionUp:
@@ -197,6 +199,12 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfgPage(-1)
 		case actionTogglePane:
 			m.cfgView.SecFocused = !m.cfgView.SecFocused
+		case actionDeleteRecord:
+			m.cfgDeleteEntry()
+		case actionDeleteZone:
+			m.cfgDeleteSection()
+		case actionToggleDisabled:
+			m.cfgToggleDisabled()
 		}
 		return m, nil
 	}
@@ -286,8 +294,16 @@ func (m RootModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.deleteZone(m.confirmZone)
 	case "record":
 		m.deleteRecord(m.confirmZone, m.confirmRec)
+	case "section":
+		m.deleteSection(m.confirmZone)
+	case "entry":
+		m.deleteEntry(m.confirmZone, m.confirmRec)
 	}
-	m.state = StateReady
+	// A Config-view mutation can move into StateError when re-projecting a
+	// hand-broken local-* entry; keep that loud error instead of clobbering it.
+	if m.state != StateError {
+		m.state = StateReady
+	}
 	return m, nil
 }
 

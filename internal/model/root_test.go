@@ -478,6 +478,23 @@ func TestToggleDisabledOnEmptyModel(t *testing.T) {
 	}
 }
 
+// TestConfigCrossViewZoneAddVisibleInConfig pins Review Focus #4: a zone added
+// in the Local data view lands in frag and is immediately visible as a
+// local-zone row in the Config view, which projects the same fragment.
+func TestConfigCrossViewZoneAddVisibleInConfig(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m.view = ViewConfig
+	m.clampCfgCursors()
+
+	if !hasEntry(m.frag, "local-zone", `"example.com." transparent`) {
+		t.Fatalf("frag = %+v, want the added local-zone entry", m.frag)
+	}
+	if v := m.View(); !strings.Contains(v, `local-zone: "example.com." transparent`) {
+		t.Errorf("Config view missing the new local-zone row:\n%s", v)
+	}
+}
+
 func TestCloneZonesIsIndependent(t *testing.T) {
 	orig := []domain.Zone{{
 		Name: "example.com.", Type: "transparent",

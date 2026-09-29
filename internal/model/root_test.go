@@ -509,6 +509,130 @@ func TestApplyProceedsWhenForeignNamesDiffer(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesScalarConflict pins the apply-time scalar hard refusal: when
+// a singleton option we set actively is also set by a foreign server section
+// elsewhere in the include graph, apply must name the key, the foreign source
+// and the manual-resolution hint, and stop before any write or reload.
+func TestApplyRefusesScalarConflict(t *testing.T) {
+	m, ctl := newTestModel(t)
+	foreign := writeForeignConf(t, m, "foreign.conf", "server:\n  verbosity: 5\n")
+	sentinel := writeSentinelFragment(t, m)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "2"}}},
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	for _, want := range []string{"verbosity", foreign, "deploy.md: Conflicts and manual resolution"} {
+		if !strings.Contains(errMsg.Error.Error(), want) {
+			t.Errorf("error %q missing %q", errMsg.Error.Error(), want)
+		}
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+	assertFragmentUnchanged(t, m, sentinel)
+}
+
+// TestApplyListsNamedThenScalarConflicts pins that when both a named-section
+// collision and a scalar option collision exist, the refusal is a single line
+// listing every named conflict first, then every scalar conflict, so nothing
+// is cut off by the status line.
+func TestApplyListsNamedThenScalarConflicts(t *testing.T) {
+	m, ctl := newTestModel(t)
+	foreign := writeForeignConf(t, m, "foreign.conf",
+		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n"+
+			"server:\n  verbosity: 5\n")
+	sentinel := writeSentinelFragment(t, m)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "2"}}},
+		forwardZone("dup."),
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	if strings.Contains(errMsg.Error.Error(), "\n") {
+		t.Errorf("refusal error contains a newline the status line would truncate: %q", errMsg.Error.Error())
+	}
+	named := fmt.Sprintf("forward-zone %q already exists in %s", "dup.", foreign)
+	scalar := fmt.Sprintf("server: verbosity already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)", foreign)
+	i, j := strings.Index(errMsg.Error.Error(), named), strings.Index(errMsg.Error.Error(), scalar)
+	if i < 0 {
+		t.Fatalf("error %q missing the named conflict %q", errMsg.Error.Error(), named)
+	}
+	if j < 0 {
+		t.Fatalf("error %q missing the scalar conflict %q", errMsg.Error.Error(), scalar)
+	}
+	if j < i {
+		t.Errorf("scalar conflict listed before the named conflict: %q", errMsg.Error.Error())
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+	assertFragmentUnchanged(t, m, sentinel)
+}
+
+// TestApplyScalarRefusalRendersBoth pins the UI contract behind the single-line
+// join: the scalar refusal must reach the status line intact, naming the key,
+// the foreign source and the manual-resolution hint.
+func TestApplyScalarRefusalRendersBoth(t *testing.T) {
+	m, _ := newTestModel(t)
+	foreign := writeForeignConf(t, m, "foreign.conf", "server:\n  verbosity: 5\n")
+	writeSentinelFragment(t, m)
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "2"}}},
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+
+	root := asRoot(t, mustUpdate(t, m, errMsg))
+	status := root.statusLine(400)
+	if strings.Contains(status, "\n") {
+		t.Errorf("status line contains an embedded newline, so it does not render on one row:\n%q", status)
+	}
+	for _, want := range []string{"verbosity", foreign, "deploy.md: Conflicts and manual resolution"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status line missing %q after the refusal:\n%s", want, status)
+		}
+	}
+}
+
+// TestApplyProceedsWhenForeignScalarDiffers pins that the scalar refusal is
+// key-based: a foreign server section setting a different singleton must not
+// block the apply.
+func TestApplyProceedsWhenForeignScalarDiffers(t *testing.T) {
+	m, ctl := newTestModel(t)
+	writeForeignConf(t, m, "foreign.conf", "server:\n  username: \"other\"\n")
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "2"}}},
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	if _, ok := msg.(AppliedMsg); !ok {
+		t.Fatalf("apply produced %T (%v), want AppliedMsg", msg, msg)
+	}
+	if ctl.reloads != 1 {
+		t.Errorf("reloads = %d, want 1", ctl.reloads)
+	}
+	if _, err := os.Stat(m.cfg.FragmentPath()); err != nil {
+		t.Errorf("fragment not written on a clean apply: %v", err)
+	}
+}
+
 // TestApplyRefusesWhenIncludeGraphUnreadable pins that a broken main config is
 // surfaced rather than silently written over: no write and no reload.
 func TestApplyRefusesWhenIncludeGraphUnreadable(t *testing.T) {

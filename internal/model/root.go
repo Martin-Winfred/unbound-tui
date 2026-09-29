@@ -474,13 +474,20 @@ func (m RootModel) apply() tea.Cmd {
 		if err != nil {
 			return ErrorMsg{fmt.Errorf("read effective config: %w", err)}
 		}
-		if conflicts := config.FindConflicts(frag, eff, cfg.FragmentPath()); len(conflicts) > 0 {
+		conflicts := config.FindConflicts(frag, eff, cfg.FragmentPath())
+		scalars := config.FindScalarConflicts(frag, eff, cfg.FragmentPath())
+		if len(conflicts) > 0 || len(scalars) > 0 {
 			// One entry per conflict, joined onto a single line: the status
 			// line pads one row and does not split newlines, so an embedded
-			// newline would hide later conflicts.
-			lines := make([]string, len(conflicts))
-			for i, c := range conflicts {
-				lines[i] = fmt.Sprintf("%s %q already exists in %s", c.Kind, c.Name, c.Source)
+			// newline would hide later conflicts. Named-section collisions
+			// come first, then scalar singleton-option collisions.
+			lines := make([]string, 0, len(conflicts)+len(scalars))
+			for _, c := range conflicts {
+				lines = append(lines, fmt.Sprintf("%s %q already exists in %s", c.Kind, c.Name, c.Source))
+			}
+			for _, c := range scalars {
+				lines = append(lines, fmt.Sprintf("%s: %s already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)",
+					c.Kind, c.Key, c.Source))
 			}
 			return ErrorMsg{fmt.Errorf("cannot apply, conflicts with the include graph: %s", strings.Join(lines, "; "))}
 		}

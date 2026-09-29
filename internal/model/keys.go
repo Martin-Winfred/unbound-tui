@@ -14,6 +14,7 @@ package model
 //	D                  delete the focused zone and its records (confirmation)
 //	space              enable/disable the focused entry
 //	w                  apply: write the fragment and reload Unbound
+//	c                  toggle between the Local data and Config views
 //	f                  toggle the read-only foreign view (with / to filter)
 //	q / ctrl+c         quit (asks first when there are unsaved changes)
 var keyMap = map[string]string{
@@ -34,6 +35,7 @@ var keyMap = map[string]string{
 	"D":      actionDeleteZone,
 	" ":      actionToggleDisabled,
 	"w":      actionApply,
+	"c":      actionSwitchView,
 	"f":      actionForeign,
 	"q":      actionQuit,
 	"ctrl+c": actionQuit,
@@ -55,6 +57,7 @@ const (
 	actionDeleteZone     = "delete-zone"
 	actionToggleDisabled = "toggle-disabled"
 	actionApply          = "apply"
+	actionSwitchView     = "switch-view"
 	actionForeign        = "foreign"
 	actionQuit           = "quit"
 )

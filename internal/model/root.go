@@ -25,10 +25,6 @@ const (
 	ViewConfig
 )
 
-// ConfigViewModel is the placeholder for the generic config editor added by
-// Task 5. It carries no state yet.
-type ConfigViewModel struct{}
-
 // RootModel is the top-level tea.Model.
 type RootModel struct {
 	ctl     domain.Controller
@@ -66,7 +62,8 @@ type RootModel struct {
 // NewRootModel builds the root model around its collaborators. The zones pane
 // starts focused. version is shown in the title.
 func NewRootModel(ctl domain.Controller, cfg *config.Manager, version string) RootModel {
-	return RootModel{ctl: ctl, cfg: cfg, version: version, state: StateReady, zoneFocused: true}
+	return RootModel{ctl: ctl, cfg: cfg, version: version, state: StateReady,
+		zoneFocused: true, cfgView: ConfigViewModel{SecFocused: true}}
 }
 
 // Init loads the generic fragment model from disk.
@@ -108,6 +105,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ZonesLoadedMsg:
 		m.frag = msg.Fragment
+		m.clampCfgCursors()
 		zones, err := config.ZonesFromFragment(msg.Fragment)
 		if err != nil {
 			// Projection can fail on malformed local-* entries; surface it
@@ -156,7 +154,54 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch keyMap[msg.String()] {
+	action := keyMap[msg.String()]
+
+	// Actions shared by both views.
+	switch action {
+	case actionSwitchView:
+		m.switchView()
+		return m, nil
+	case actionApply:
+		if m.dirty {
+			m.state = StateApplying
+			return m, m.apply()
+		}
+		m.notice = "nothing to apply"
+		return m, nil
+	case actionForeign:
+		return m.requestForeign()
+	case actionQuit:
+		if m.dirty {
+			m.confirmKind = "quit"
+			m.state = StateConfirm
+			return m, nil
+		}
+		return m, tea.Quit
+	}
+
+	// The Config view routes movement and focus to its own panes; the
+	// lifecycle keys land in Task 6/7.
+	if m.view == ViewConfig {
+		switch action {
+		case actionUp:
+			m.cfgMove(-1)
+		case actionDown:
+			m.cfgMove(1)
+		case actionTop:
+			m.cfgTop()
+		case actionBottom:
+			m.cfgBottom()
+		case actionPageDown:
+			m.cfgPage(1)
+		case actionPageUp:
+			m.cfgPage(-1)
+		case actionTogglePane:
+			m.cfgView.SecFocused = !m.cfgView.SecFocused
+		}
+		return m, nil
+	}
+
+	switch action {
 	case actionUp:
 		m.moveUp()
 	case actionDown:
@@ -211,23 +256,17 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case actionToggleDisabled:
 		m.toggleDisabled()
-	case actionApply:
-		if m.dirty {
-			m.state = StateApplying
-			return m, m.apply()
-		}
-		m.notice = "nothing to apply"
-	case actionForeign:
-		return m.requestForeign()
-	case actionQuit:
-		if m.dirty {
-			m.confirmKind = "quit"
-			m.state = StateConfirm
-			return m, nil
-		}
-		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// switchView toggles between the Local data view and the Config view.
+func (m *RootModel) switchView() {
+	if m.view == ViewConfig {
+		m.view = ViewZones
+		return
+	}
+	m.view = ViewConfig
 }
 
 func (m RootModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

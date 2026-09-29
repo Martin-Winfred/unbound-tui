@@ -335,6 +335,9 @@ func (m RootModel) helpText() string {
 	case StateForeign:
 		return "j/k move · tab pane · / filter · g/G top/bottom · ctrl+d/u page · esc back"
 	default:
+		if m.view == ViewConfig {
+			return "c local data · tab pane · j/k move · g/G top/bottom · ctrl+d/u page · w apply · f foreign · q quit"
+		}
 		return "a add-zone · r add-record · e ttl · t type · space toggle · d/D delete · w apply · f foreign · q quit"
 	}
 }
@@ -351,7 +354,11 @@ func (m RootModel) statusLine(w int) string {
 		}
 		segs = append(segs, th.bad.Render(msg))
 	default:
-		segs = append(segs, th.ok.Render("ready"))
+		word := "ready"
+		if m.view == ViewConfig {
+			word = "config"
+		}
+		segs = append(segs, th.ok.Render(word))
 	}
 	segs = append(segs, th.dimStyle.Render(fmt.Sprintf("zones %d · records %d", len(m.zones), m.recordCount())))
 	if m.dirty {
@@ -367,10 +374,14 @@ func (m RootModel) statusLine(w int) string {
 
 // titleText is the header line, including the version when known.
 func (m RootModel) titleText() string {
-	if m.version == "" {
-		return "unbound-tui"
+	base := "unbound-tui"
+	if m.version != "" {
+		base += " " + m.version
 	}
-	return "unbound-tui " + m.version
+	if m.view == ViewConfig {
+		base += " — config"
+	}
+	return base
 }
 
 // View renders the whole screen.
@@ -399,6 +410,8 @@ func (m RootModel) View() string {
 	var body string
 	if m.state == StateForeign {
 		body = m.foreign.view(w, bodyH)
+	} else if m.view == ViewConfig {
+		body = m.configPanes(w, bodyH)
 	} else {
 		body = m.mainPanes(w, bodyH)
 	}

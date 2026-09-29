@@ -305,6 +305,93 @@ func isForwardOrStub(kind string) bool {
 	return kind == "forward-zone" || kind == "stub-zone"
 }
 
+// ScalarConflict is one foreign section that sets a singleton option we also
+// set. Kind and Key are the foreign section's kind and the shared directive
+// key; Source is the file it was declared in, so the user can go find it.
+type ScalarConflict struct {
+	Kind   string
+	Key    string
+	Source string
+}
+
+// ScalarKeys is the singleton directive set: Unbound accepts each of these at
+// most once per server/remote-control section, so two active declarations in
+// the effective graph are a latent conflict (the later one wins at parse
+// time). It is exported for the model layer's warning index.
+//
+// The set alone is kind-agnostic: FindScalarConflicts is what pairs a key with
+// the {server, remote-control} section kinds, and only those kinds may carry a
+// singleton at all.
+var ScalarKeys = map[string]bool{
+	"interface":         true,
+	"port":              true,
+	"verbosity":         true,
+	"username":          true,
+	"tls-cert-bundle":   true,
+	"root-hints":        true,
+	"control-enable":    true,
+	"control-interface": true,
+	"control-port":      true,
+	"control-use-cert":  true,
+	"server-key-file":   true,
+	"server-cert-file":  true,
+	"control-key-file":  true,
+	"control-cert-file": true,
+}
+
+// isScalarKind reports whether a section kind may carry singleton options.
+func isScalarKind(kind string) bool {
+	return kind == "server" || kind == "remote-control"
+}
+
+// FindScalarConflicts reports every singleton option we set actively (f),
+// inside a server or remote-control section, that a foreign section of the
+// SAME kind elsewhere in the effective include graph (eff) also sets actively.
+//
+// Only active entries participate, on either side: a disabled entry is
+// commented out and cannot clash. ownPath is the fragment path as the caller
+// spells it; it is normalized with the same resolver used for every Source, so
+// our own included fragment never self-conflicts. Each foreign section yields
+// at most one conflict per key. Conflicts are reported in effective order,
+// with a section's keys in entry order, so the result is stable.
+func FindScalarConflicts(f domain.Fragment, eff Effective, ownPath string) []ScalarConflict {
+	own := resolveOwn(ownPath)
+
+	// ours is the set of (kind, key) singleton pairs we actively set.
+	ours := make(map[[2]string]bool)
+	for _, s := range f.Sections {
+		if !isScalarKind(s.Kind) {
+			continue
+		}
+		for _, e := range s.Entries {
+			if !e.Disabled && ScalarKeys[e.Key] {
+				ours[[2]string{s.Kind, e.Key}] = true
+			}
+		}
+	}
+	if len(ours) == 0 {
+		return nil
+	}
+
+	var out []ScalarConflict
+	for _, fs := range eff.Sections {
+		if !isScalarKind(fs.Kind) || !hasActive(fs.Entries) || fs.Source == own {
+			continue
+		}
+		seen := make(map[string]bool)
+		for _, e := range fs.Entries {
+			if e.Disabled || !ScalarKeys[e.Key] || seen[e.Key] {
+				continue
+			}
+			if ours[[2]string{fs.Kind, e.Key}] {
+				out = append(out, ScalarConflict{Kind: fs.Kind, Key: e.Key, Source: fs.Source})
+				seen[e.Key] = true
+			}
+		}
+	}
+	return out
+}
+
 // activeIncludeLines returns the 1-based line numbers of the active include
 // directives, in order. scanConfig carries no line numbers, so walk pairs its
 // active include items with this list positionally to keep errors actionable.

@@ -509,3 +509,115 @@ func TestFindConflicts(t *testing.T) {
 		}
 	})
 }
+
+// TestScalarKeysPinned pins the exported singleton set the model layer builds
+// its warning index from: exactly the 14 directives Unbound accepts once per
+// server/remote-control section, and nothing else.
+func TestScalarKeysPinned(t *testing.T) {
+	want := []string{
+		"interface", "port", "verbosity", "username", "tls-cert-bundle",
+		"root-hints", "control-enable", "control-interface", "control-port",
+		"control-use-cert", "server-key-file", "server-cert-file",
+		"control-key-file", "control-cert-file",
+	}
+	if len(ScalarKeys) != len(want) {
+		t.Errorf("ScalarKeys has %d keys, want %d", len(ScalarKeys), len(want))
+	}
+	for _, key := range want {
+		if !ScalarKeys[key] {
+			t.Errorf("ScalarKeys[%q] = false, want true", key)
+		}
+	}
+}
+
+// TestFindScalarConflicts exercises the singleton-option detector over the
+// include graph: a singleton directive we set actively in a server or
+// remote-control section collides with the same key set actively in a foreign
+// section of the SAME kind, sourced from a file other than our own fragment.
+// A disabled entry never participates, on either side, and non-singleton
+// directives (however many times they repeat) never conflict.
+func TestFindScalarConflicts(t *testing.T) {
+	t.Run("same kind and key names the foreign file", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "hit", "ours.conf")
+		foreign := fixturePath(t, "scalar", "hit", "foreign.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "hit", "main.conf")), ours)
+		want := []ScalarConflict{{Kind: "server", Key: "verbosity", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindScalarConflicts() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("repeatable access-control does not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "accessctrl", "ours.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "accessctrl", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindScalarConflicts() = %+v, want none (access-control repeats)", got)
+		}
+	})
+
+	t.Run("non-singleton server and zone keys do not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "nonset", "ours.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "nonset", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindScalarConflicts() = %+v, want none (local-data/forward-addr are not singletons)", got)
+		}
+	})
+
+	t.Run("fully disabled foreign entry does not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "dead-foreign", "ours.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "dead-foreign", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindScalarConflicts() = %+v, want none (foreign verbosity is disabled)", got)
+		}
+	})
+
+	t.Run("our fully disabled entry does not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "dead-ours", "ours.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "dead-ours", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindScalarConflicts() = %+v, want none (our verbosity is disabled)", got)
+		}
+	})
+
+	// The caller may spell our fragment through a symlink while ReadEffective
+	// reports the symlink-resolved path. Both sides must normalize identically,
+	// or our own included sections would look foreign and self-conflict.
+	t.Run("symlinked ownPath does not self-conflict", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "own", "ours.conf")
+		foreign := fixturePath(t, "scalar", "own", "foreign.conf")
+		link := filepath.Join(t.TempDir(), "own-via-symlink.conf")
+		if err := os.Symlink(ours, link); err != nil {
+			t.Fatalf("symlink %s -> %s: %v", link, ours, err)
+		}
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "own", "main.conf")), link)
+		want := []ScalarConflict{{Kind: "server", Key: "verbosity", Source: foreign}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindScalarConflicts(ownPath=%s) = %+v, want only the foreign conflict %+v", link, got, want)
+		}
+	})
+
+	t.Run("cross-kind same key does not conflict", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "crosskind", "ours.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "crosskind", "main.conf")), ours)
+		if len(got) != 0 {
+			t.Errorf("FindScalarConflicts() = %+v, want none (server port vs remote-control port)", got)
+		}
+	})
+
+	t.Run("multiple keys and sections keep effective order", func(t *testing.T) {
+		ours := fixturePath(t, "scalar", "multi", "ours.conf")
+		fa := fixturePath(t, "scalar", "multi", "fa.conf")
+		fb := fixturePath(t, "scalar", "multi", "fb.conf")
+		fc := fixturePath(t, "scalar", "multi", "fc.conf")
+		got := FindScalarConflicts(mustParseFragment(t, ours), mustReadEffective(t, fixturePath(t, "scalar", "multi", "main.conf")), ours)
+		want := []ScalarConflict{
+			{Kind: "server", Key: "verbosity", Source: fa},
+			{Kind: "server", Key: "port", Source: fa},
+			{Kind: "server", Key: "verbosity", Source: fb},
+			{Kind: "remote-control", Key: "control-enable", Source: fc},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindScalarConflicts() = %+v, want %+v", got, want)
+		}
+	})
+}

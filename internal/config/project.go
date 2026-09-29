@@ -222,11 +222,33 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 	return owner, ttl, class, strings.ToUpper(rest[0]), strings.Join(rest[1:], " "), nil
 }
 
+// asciiLower lowercases the ASCII bytes 'A'-'Z' and leaves every other byte
+// untouched. RFC 4343 folds case for ASCII only, and unlike strings.ToLower it
+// never changes a string's byte length, so a folded suffix match cannot desync
+// from the original strings used to derive a record's relative name.
+func asciiLower(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 'A' || c > 'Z' {
+			continue
+		}
+		if b == nil {
+			b = []byte(s)
+		}
+		b[i] = c + ('a' - 'A')
+	}
+	if b == nil {
+		return s
+	}
+	return string(b)
+}
+
 // relativeName returns owner's name relative to zone while preserving the
 // owner's original spelling. DNS names fold case (RFC 4343), so the
 // owner/zone comparison ignores case; an owner equal to the zone becomes "@".
 func relativeName(owner, zone string) string {
-	lo, lz := strings.ToLower(owner), strings.ToLower(zone)
+	lo, lz := asciiLower(owner), asciiLower(zone)
 	switch {
 	case lo == lz:
 		return "@"
@@ -243,10 +265,10 @@ func relativeName(owner, zone string) string {
 // ("."+zone). This is the M5 semantic change from the byte-exact v0.1 behavior
 // that M2/M3 reviews had pinned.
 func owningZoneName(owner string, zoneNames []string) string {
-	lo := strings.ToLower(owner)
+	lo := asciiLower(owner)
 	best := ""
 	for _, z := range zoneNames {
-		lz := strings.ToLower(z)
+		lz := asciiLower(z)
 		if lo == lz || strings.HasSuffix(lo, "."+lz) {
 			if len(z) > len(best) {
 				best = z

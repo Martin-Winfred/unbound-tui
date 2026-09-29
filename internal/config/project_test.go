@@ -205,6 +205,70 @@ local-data: "xexample.com. 300 IN A 192.0.2.7"`,
 	}
 }
 
+// TestZonesFromFragmentNonASCIIOwnership guards RFC 4343 folding against the
+// byte-length change strings.ToLower can cause for non-ASCII runes: folding is
+// ASCII-only, so a hand-edited fragment with non-ASCII names never yields a
+// suffix match whose relative-name slice offset is negative. The Kelvin sign
+// (U+212A) folds to "k" and shrinks, so under strings.ToLower it matched an
+// ASCII "k." zone and made relativeName slice below zero.
+func TestZonesFromFragmentNonASCIIOwnership(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []domain.Zone
+	}{
+		{
+			name: "non-ASCII label before ASCII zone attaches",
+			src: "server:\n" +
+				"local-zone: \"example.\" transparent\n" +
+				"local-data: \"\u0130.example. 300 IN A 1.2.3.4\"\n",
+			want: []domain.Zone{{
+				Name: "example.", Type: "transparent",
+				Records: []domain.Record{{Name: "\u0130", RType: "A", Value: "1.2.3.4", TTL: 300}},
+			}},
+		},
+		{
+			name: "non-ASCII case variant does not fold",
+			src: "server:\n" +
+				"local-zone: \"\u212a.\" transparent\n" +
+				"local-data: \"k.k. 300 IN A 1.2.3.4\"\n",
+			want: []domain.Zone{
+				{
+					Name: "k.k.", Type: "transparent",
+					Records: []domain.Record{{Name: "@", RType: "A", Value: "1.2.3.4", TTL: 300}},
+				},
+				{Name: "\u212a.", Type: "transparent"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, err := parseFragment([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("parseFragment: %v", err)
+			}
+			var (
+				zones []domain.Zone
+				perr  error
+				rec   any
+			)
+			func() {
+				defer func() { rec = recover() }()
+				zones, perr = ZonesFromFragment(f)
+			}()
+			if rec != nil {
+				t.Fatalf("ZonesFromFragment panicked: %v", rec)
+			}
+			if perr != nil {
+				t.Fatalf("ZonesFromFragment: %v", perr)
+			}
+			if !reflect.DeepEqual(zones, tt.want) {
+				t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, tt.want)
+			}
+		})
+	}
+}
+
 // TestZonesFromFragmentMalformedEntry pins loud failure: a known directive
 // whose value cannot be parsed is a projection error naming the section and
 // entry, never a silent drop. The Fragment model itself stays total.

@@ -118,25 +118,24 @@ local-zone: "aaa.example." transparent
 	}
 }
 
-// TestZonesFromFragmentCaseVariantOwnership pins zone ownership under case
-// differences (plan Review Focus #4): DNS names are case-insensitive, so an
-// upper-case owner attaches to the declared zone exactly as its lower-case
-// spelling does, rather than springing an implicit zone of its own.
+// TestZonesFromFragmentCaseVariantOwnership pins v0.1 case-sensitive
+// ownership: zone matching is byte-exact, so an upper-case owner does NOT
+// attach to a lower-case declared zone. It springs an implicit transparent
+// zone of its own, exactly as v0.1's owningZoneName did.
 func TestZonesFromFragmentCaseVariantOwnership(t *testing.T) {
-	upper := project(t, `server:
+	zones := project(t, `server:
 local-zone: "example.com." transparent
 local-data: "WWW.EXAMPLE.COM. 300 IN A 192.0.2.1"
 `)
-	lower := project(t, `server:
-local-zone: "example.com." transparent
-local-data: "www.example.com. 300 IN A 192.0.2.1"
-`)
-	if len(upper) != 1 || upper[0].Name != "example.com." {
-		t.Fatalf("upper-case owner = %+v, want a single zone example.com.", upper)
+	want := []domain.Zone{
+		{
+			Name: "WWW.EXAMPLE.COM.", Type: "transparent",
+			Records: []domain.Record{{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300}},
+		},
+		{Name: "example.com.", Type: "transparent"},
 	}
-	if len(upper[0].Records) != 1 || !strings.EqualFold(upper[0].Records[0].Name, lower[0].Records[0].Name) {
-		t.Errorf("upper-case record = %+v, want relative name %q (case-insensitive)",
-			upper[0].Records, lower[0].Records[0].Name)
+	if !reflect.DeepEqual(zones, want) {
+		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
 	}
 }
 

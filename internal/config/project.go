@@ -136,7 +136,12 @@ func attachRecords(zs []zoneDecl, rs []recordDecl) []domain.Zone {
 			addZone(name, "transparent", r.disabled)
 		}
 		zone := byName[name]
-		rel := relativeName(r.owner, zone.Name)
+		rel := r.owner
+		if r.owner == zone.Name {
+			rel = "@"
+		} else {
+			rel = strings.TrimSuffix(r.owner, "."+zone.Name)
+		}
 		zone.Records = append(zone.Records, domain.Record{
 			Name:     rel,
 			RType:    r.rtype,
@@ -223,32 +228,14 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 }
 
 // owningZoneName returns the longest declared zone that contains owner, or "".
-// DNS names are case-insensitive, so matching folds case; the declared zone's
-// own spelling is returned.
 func owningZoneName(owner string, zoneNames []string) string {
-	lower := strings.ToLower(owner)
 	best := ""
 	for _, z := range zoneNames {
-		zl := strings.ToLower(z)
-		if lower == zl || strings.HasSuffix(lower, "."+zl) {
+		if owner == z || strings.HasSuffix(owner, "."+z) {
 			if len(z) > len(best) {
 				best = z
 			}
 		}
 	}
 	return best
-}
-
-// relativeName renders owner relative to its owning zone, or "@" for the apex.
-// The comparison folds case so a differently-cased owner still attaches
-// cleanly; the owner's own spelling is preserved in the returned name.
-func relativeName(owner, zone string) string {
-	if strings.EqualFold(owner, zone) {
-		return "@"
-	}
-	n := len(owner) - len(zone) - 1
-	if n <= 0 {
-		return owner
-	}
-	return owner[:n]
 }

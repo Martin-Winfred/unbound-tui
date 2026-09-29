@@ -274,6 +274,8 @@ func TestSchemaPlaceholder(t *testing.T) {
 		{validate.TypeCIDR, "192.0.2.0/24"},
 		{validate.TypeRR, "host.example. 300 IN A 192.0.2.1"},
 		{validate.TypeZone, `"example." transparent`},
+		{validate.TypePort, "53"},
+		{validate.TypeAccessCtrl, "192.0.2.0/24 allow"},
 		{validate.TypeText, "value"},
 		{validate.Type(""), "value"},
 	}
@@ -531,6 +533,61 @@ func TestConfigFormEditEntryScalarWarning(t *testing.T) {
 	}
 	if m.notice != scalarWarnFixture {
 		t.Errorf("notice = %q, want %q", m.notice, scalarWarnFixture)
+	}
+}
+
+// TestConfigFormEditEntryScalarWarningDisabled is the two-sided false-alarm
+// regression for the submitted entry: editing a commented-out (disabled)
+// singleton must not warn, because apply-time FindScalarConflicts ignores a
+// disabled entry on our side too. The enabled case keeps the warning.
+func TestConfigFormEditEntryScalarWarningDisabled(t *testing.T) {
+	cases := []struct {
+		name     string
+		disabled bool
+		want     string
+	}{
+		{"disabled entry is silent", true, ""},
+		{"enabled entry still warns", false, scalarWarnFixture},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := domain.Fragment{Sections: []domain.Section{
+				{Kind: "server", Entries: []domain.Entry{{Key: "verbosity", Value: "1", Disabled: tc.disabled}}},
+			}}
+			m := configModel(t, f)
+			m.scalarIdx = map[[2]string][]string{{"server", "verbosity"}: {"/etc/unbound/conf.d/zz.conf"}}
+
+			m.editEntryForm(0, 0, m.frag.Sections[0].Entries[0])
+			m.form.inputs[1].SetValue("3")
+			next, cmd := submitFormKey(t, m, "ctrl+s")
+			if cmd == nil {
+				t.Fatalf("edit submit produced no command; err = %v", next.form.err)
+			}
+			m = asRoot(t, mustUpdate(t, next, cmd().(ConfigFormSubmitMsg)))
+
+			if m.notice != tc.want {
+				t.Errorf("notice = %q, want %q", m.notice, tc.want)
+			}
+		})
+	}
+}
+
+// TestConfigFormAddEntryScalarWarningRemoteControl pins the remote-control
+// branch of scalarWarning: control-port is a singleton in a remote-control
+// section, so a foreign hit warns with the same wording as the server branch.
+func TestConfigFormAddEntryScalarWarningRemoteControl(t *testing.T) {
+	const src = "/etc/unbound/remote-control.conf"
+	f := domain.Fragment{Sections: []domain.Section{{Kind: "remote-control"}}}
+	m := configModel(t, f)
+	m.cfgView = ConfigViewModel{SecCursor: 0, SecFocused: true}
+	m.scalarIdx = map[[2]string][]string{{"remote-control", "control-port"}: {src}}
+
+	m = submitEntryToServer(t, m, "control-port", "8953")
+
+	want := "remote-control: control-port already set in " + src +
+		" — edit that file manually (see deploy.md: Conflicts and manual resolution)"
+	if m.notice != want {
+		t.Errorf("notice = %q, want %q", m.notice, want)
 	}
 }
 

@@ -145,6 +145,10 @@ func schemaPlaceholder(t validate.Type) string {
 		return "host.example. 300 IN A 192.0.2.1"
 	case validate.TypeZone:
 		return `"example." transparent`
+	case validate.TypePort:
+		return "53"
+	case validate.TypeAccessCtrl:
+		return "192.0.2.0/24 allow"
 	default: // TypeText and the empty Type
 		return "value"
 	}
@@ -269,6 +273,10 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 	m.cfgForm = configFormCtx{}
 	m.state = StateReady
 
+	// submittedDisabled tracks whether the just-submitted entry is commented
+	// out. Only an edit can preserve a Disabled flag; an added entry is active.
+	submittedDisabled := false
+
 	switch msg.Mode {
 	case FormAddSection:
 		sec := domain.Section{Kind: msg.Kind}
@@ -298,6 +306,7 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 		if msg.EntIndex < 0 || msg.EntIndex >= len(entries) {
 			return m, nil
 		}
+		submittedDisabled = entries[msg.EntIndex].Disabled
 		entries[msg.EntIndex].Key = msg.Key
 		entries[msg.EntIndex].Value = msg.Value
 
@@ -311,7 +320,7 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 	// server/remote-control section already sets. Warn without blocking: the
 	// apply gate re-checks freshly and refuses; here we only point at the file.
 	if msg.Mode == FormAddEntry || msg.Mode == FormEditEntry {
-		if warn := m.scalarWarning(msg.SecIndex, msg.Key); warn != "" {
+		if warn := m.scalarWarning(msg.SecIndex, msg.Key, submittedDisabled); warn != "" {
 			m.notice = warn
 		}
 	}
@@ -328,10 +337,17 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 // scalarWarning returns the add-time conflict notice for a singleton option
 // just set in section secIndex, or "" when the key is not a singleton, the
 // section kind is not server/remote-control, or no foreign source sets it.
-// The wording is pinned and matches the apply-time refusal hint.
-func (m RootModel) scalarWarning(secIndex int, key string) string {
+//
+// submittedDisabled mirrors the apply-time rule on our own side: a commented
+// out entry cannot clash, so it warns nothing — unless the same {kind,key} is
+// also set actively elsewhere in our fragment, which still can. The wording is
+// pinned and matches the apply-time refusal hint.
+func (m RootModel) scalarWarning(secIndex int, key string, submittedDisabled bool) string {
 	s, ok := m.sectionAt(secIndex)
 	if !ok || (s.Kind != "server" && s.Kind != "remote-control") || !config.ScalarKeys[key] {
+		return ""
+	}
+	if submittedDisabled && !m.hasActiveScalar(s.Kind, key) {
 		return ""
 	}
 	sources := m.scalarIdx[[2]string{s.Kind, key}]
@@ -340,4 +356,22 @@ func (m RootModel) scalarWarning(secIndex int, key string) string {
 	}
 	return fmt.Sprintf("%s: %s already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)",
 		s.Kind, key, sources[0])
+}
+
+// hasActiveScalar reports whether the fragment actively sets the singleton
+// {kind,key} somewhere. It mirrors the active-only rule FindScalarConflicts
+// applies on our side: a lone commented-out entry cannot clash, but a live
+// duplicate of another entry still can.
+func (m RootModel) hasActiveScalar(kind, key string) bool {
+	for _, s := range m.frag.Sections {
+		if s.Kind != kind {
+			continue
+		}
+		for _, e := range s.Entries {
+			if !e.Disabled && e.Key == key {
+				return true
+			}
+		}
+	}
+	return false
 }

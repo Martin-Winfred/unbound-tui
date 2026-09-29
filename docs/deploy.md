@@ -92,7 +92,7 @@ silently wins). Adding or editing such a key warns without blocking; apply is
 refused:
 
 ```text
-error: cannot apply, conflicts with the include graph: server: verbosity already set in /etc/unbound/conf.d/zz.conf — edit that file manually (see deploy.md: Conflicts and manual resolution)
+error: cannot apply, conflicts with the include graph: server: verbosity already set in /etc/unbound/unbound.conf.d/zz.conf — edit that file manually (see deploy.md: Conflicts and manual resolution)
 ```
 
 Distributions commonly provision `remote-control.conf` with `control-enable`,

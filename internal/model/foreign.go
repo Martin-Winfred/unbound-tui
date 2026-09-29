@@ -2,12 +2,14 @@ package model
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Martin-Winfred/unbound-tui/internal/config"
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
@@ -22,6 +24,15 @@ type foreignZone struct {
 	rrs  []string
 }
 
+// UpstreamRow is one config-file forward-zone/stub-zone that our fragment does
+// not declare. Dead marks a section with no active entry: it is shown with a
+// ⛔ and never participates in conflict warnings.
+type UpstreamRow struct {
+	Kind, Name, Source string
+	Entries            int
+	Dead               bool
+}
+
 // ForeignModel is the read-only master/detail view of runtime entries our
 // fragment does not own. It never mutates anything.
 type ForeignModel struct {
@@ -34,6 +45,15 @@ type ForeignModel struct {
 	filter    string
 	filtering bool
 	input     textinput.Model
+
+	// tab selects the pane set: 0 = runtime zones/RRs (default), 1 =
+	// config-file forward/stub sections. upErr is a read error for the
+	// upstreams fetch, shown as a notice in place of the list.
+	tab       int
+	upstreams []UpstreamRow
+	upShown   []UpstreamRow
+	upCur     int
+	upErr     string
 
 	err error
 	w   int
@@ -69,6 +89,68 @@ func newForeignModel(zones []domain.LocalZone, rrs []string, err error) ForeignM
 	f.input = ti
 	f.applyFilter()
 	return f
+}
+
+// setUpstreams installs the config-file forward/stub rows (and an optional
+// read error) and recomputes the filtered list.
+func (f *ForeignModel) setUpstreams(rows []UpstreamRow, upErr string) {
+	f.upstreams = rows
+	f.upErr = upErr
+	f.upCur = 0
+	f.applyFilter()
+}
+
+// buildUpstreamRows extracts the forward-zone/stub-zone sections of the
+// effective include graph that our own fragment does not declare, in effective
+// order. ownPath is normalized the same way ReadEffective normalizes every
+// Source, so a fragment reached through a symlink is still recognized as ours;
+// a section is Dead when it has no active entry.
+func buildUpstreamRows(eff config.Effective, ownPath string) []UpstreamRow {
+	own := normalizeSourcePath(ownPath)
+	var out []UpstreamRow
+	for _, s := range eff.Sections {
+		if s.Kind != "forward-zone" && s.Kind != "stub-zone" {
+			continue
+		}
+		if s.Source == own {
+			continue
+		}
+		out = append(out, UpstreamRow{
+			Kind:    s.Kind,
+			Name:    config.SectionKeyName(s.Section),
+			Source:  s.Source,
+			Entries: len(s.Entries),
+			Dead:    !hasActiveEntries(s.Entries),
+		})
+	}
+	return out
+}
+
+// normalizeSourcePath mirrors config's unexported resolveOwn (absolute,
+// symlinks resolved, falling back to the absolute path when the file does not
+// exist yet). It keeps buildUpstreamRows' comparison in lockstep with the
+// Source tags ReadEffective emits. Only the exported config API is used to
+// derive rows; this local copy exists because the resolver is private.
+func normalizeSourcePath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+// hasActiveEntries reports whether entries holds at least one enabled
+// directive. It mirrors config's private helper for the Dead flag.
+func hasActiveEntries(entries []domain.Entry) bool {
+	for _, e := range entries {
+		if !e.Disabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *ForeignModel) noZoneIndex() int {
@@ -111,6 +193,14 @@ func (f *ForeignModel) applyFilter() {
 		}
 	}
 	f.shown = out
+
+	up := make([]UpstreamRow, 0, len(f.upstreams))
+	for _, u := range f.upstreams {
+		if q == "" || strings.Contains(strings.ToLower(u.Kind+" "+u.Name+" "+u.Source), q) {
+			up = append(up, u)
+		}
+	}
+	f.upShown = up
 	f.clamp()
 }
 
@@ -128,6 +218,12 @@ func (f *ForeignModel) clamp() {
 	if f.rCur < 0 {
 		f.rCur = 0
 	}
+	if f.upCur >= len(f.upShown) {
+		f.upCur = len(f.upShown) - 1
+	}
+	if f.upCur < 0 {
+		f.upCur = 0
+	}
 }
 
 func (f *ForeignModel) pageRows() int {
@@ -142,6 +238,12 @@ func (f *ForeignModel) pageRows() int {
 }
 
 func (f *ForeignModel) moveUp() {
+	if f.tab == 1 {
+		if f.upCur > 0 {
+			f.upCur--
+		}
+		return
+	}
 	if f.focusRR {
 		if f.rCur > 0 {
 			f.rCur--
@@ -155,6 +257,12 @@ func (f *ForeignModel) moveUp() {
 }
 
 func (f *ForeignModel) moveDown() {
+	if f.tab == 1 {
+		if f.upCur < len(f.upShown)-1 {
+			f.upCur++
+		}
+		return
+	}
 	if f.focusRR {
 		if f.rCur < len(f.currentRRs())-1 {
 			f.rCur++
@@ -168,6 +276,13 @@ func (f *ForeignModel) moveDown() {
 }
 
 func (f *ForeignModel) moveBottom() {
+	if f.tab == 1 {
+		f.upCur = len(f.upShown) - 1
+		if f.upCur < 0 {
+			f.upCur = 0
+		}
+		return
+	}
 	if f.focusRR {
 		f.rCur = len(f.currentRRs()) - 1
 		if f.rCur < 0 {
@@ -184,6 +299,17 @@ func (f *ForeignModel) moveBottom() {
 
 func (f *ForeignModel) page(dir int) {
 	step := f.pageRows()
+	if f.tab == 1 {
+		f.upCur += dir * step
+		n := len(f.upShown) - 1
+		if f.upCur > n {
+			f.upCur = n
+		}
+		if f.upCur < 0 {
+			f.upCur = 0
+		}
+		return
+	}
 	if f.focusRR {
 		f.rCur += dir * step
 		n := len(f.currentRRs()) - 1
@@ -237,15 +363,23 @@ func (f ForeignModel) Update(msg tea.Msg) (ForeignModel, tea.Cmd) {
 	case "down", "j":
 		f.moveDown()
 	case "g":
-		f.zCur, f.rCur = 0, 0
+		f.zCur, f.rCur, f.upCur = 0, 0, 0
 	case "G":
 		f.moveBottom()
+	case "u":
+		f.tab = 1 - f.tab
+		if f.tab == 1 {
+			f.focusRR = false
+		}
+		f.clamp()
 	case "ctrl+d":
 		f.page(1)
 	case "ctrl+u":
 		f.page(-1)
 	case "tab", "h", "l", "left", "right":
-		f.focusRR = !f.focusRR
+		if f.tab == 0 {
+			f.focusRR = !f.focusRR
+		}
 	case "/":
 		f.filtering = true
 		f.input.SetValue(f.filter)
@@ -273,7 +407,7 @@ func (f ForeignModel) view(w, h int) string {
 	if f.err != nil {
 		return indent(th.box.Render(fit("Error: "+f.err.Error(), min(w-8, 76))), 2)
 	}
-	if len(f.all) == 0 {
+	if f.tab == 0 && len(f.all) == 0 {
 		return th.dimStyle.Render(truncate("None - Unbound serves only entries from our fragment.", w))
 	}
 
@@ -290,6 +424,14 @@ func (f ForeignModel) view(w, h int) string {
 	ph := h - topH
 	if ph < 3 {
 		ph = 3
+	}
+
+	if f.tab == 1 {
+		body := f.upstreamBody(w, ph)
+		if top != "" {
+			return top + "\n" + body
+		}
+		return body
 	}
 
 	zoneTitle := fmt.Sprintf("Foreign zones · %d", len(f.shown))
@@ -344,6 +486,35 @@ func (f ForeignModel) view(w, h int) string {
 		return top + "\n" + panels
 	}
 	return panels
+}
+
+// upstreamBody renders the config-file forward/stub sections as a single
+// full-width, read-only panel. A fetch error and an empty list each render a
+// single placeholder line instead of the panel.
+func (f ForeignModel) upstreamBody(w, ph int) string {
+	if f.upErr != "" {
+		return th.bad.Render(truncate("upstreams: "+f.upErr, w))
+	}
+	if len(f.upShown) == 0 {
+		return th.dimStyle.Render(truncate("no foreign forward/stub sections", w))
+	}
+	title := fmt.Sprintf("Foreign upstreams · %d", len(f.upShown))
+	rows := upstreamRows(f.upShown)
+	return renderPanel(title, func(int) []row { return rows }, f.upCur, true, w, ph)
+}
+
+// upstreamRows renders each row as `kind name · N entries · source`, appending
+// ⛔ to dead (empty or fully disabled) sections. Dead rows are dimmed.
+func upstreamRows(rows []UpstreamRow) []row {
+	out := make([]row, 0, len(rows))
+	for _, u := range rows {
+		text := fmt.Sprintf("%s %s · %d entries · %s", u.Kind, u.Name, u.Entries, u.Source)
+		if u.Dead {
+			text += " ⛔"
+		}
+		out = append(out, row{text: text, dim: u.Dead})
+	}
+	return out
 }
 
 // rrOwner returns the owner name (first whitespace field) of an RR line.

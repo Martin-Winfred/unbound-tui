@@ -32,6 +32,9 @@ func NewManager(confPath string) (*Manager, error) {
 // FragmentPath returns the effective fragment path.
 func (m *Manager) FragmentPath() string { return m.fragmentPath }
 
+// MainConfPath returns the Unbound main config path the manager was built for.
+func (m *Manager) MainConfPath() string { return m.mainConfPath }
+
 // SetFragmentPath overrides the fragment location (development / hosts
 // without /etc write access).
 func (m *Manager) SetFragmentPath(p string) { m.fragmentPath = p }

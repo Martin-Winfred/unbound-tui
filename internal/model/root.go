@@ -59,6 +59,11 @@ type RootModel struct {
 
 	foreign ForeignModel
 
+	// upstreams is the load-time snapshot of foreign forward/stub sections in
+	// the include graph (add-time conflict warnings). The Foreign view keeps
+	// its own, freshly fetched copy.
+	upstreams []UpstreamRow
+
 	width, height int
 }
 
@@ -69,14 +74,21 @@ func NewRootModel(ctl domain.Controller, cfg *config.Manager, version string) Ro
 		zoneFocused: true, cfgView: ConfigViewModel{SecFocused: true}}
 }
 
-// Init loads the generic fragment model from disk.
+// Init loads the generic fragment model from disk. It also snapshots the
+// include graph's foreign forward/stub sections for add-time conflict
+// warnings; an upstream read failure degrades to an empty snapshot (never
+// fatal) because the Foreign view re-reads it on demand.
 func (m RootModel) Init() tea.Cmd {
 	return func() tea.Msg {
 		f, err := m.cfg.ReadFragment()
 		if err != nil {
 			return ErrorMsg{fmt.Errorf("read fragment: %w", err)}
 		}
-		return ZonesLoadedMsg{Fragment: f}
+		var ups []UpstreamRow
+		if eff, err := config.ReadEffective(m.cfg.MainConfPath()); err == nil {
+			ups = buildUpstreamRows(eff, m.cfg.FragmentPath())
+		}
+		return ZonesLoadedMsg{Fragment: f, Upstreams: ups}
 	}
 }
 
@@ -108,6 +120,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ZonesLoadedMsg:
 		m.frag = msg.Fragment
+		m.upstreams = msg.Upstreams
 		m.clampCfgCursors()
 		zones, err := config.ZonesFromFragment(msg.Fragment)
 		if err != nil {
@@ -128,6 +141,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ForeignLoadedMsg:
 		m.foreign = newForeignModel(msg.Zones, msg.RRs, msg.Err)
+		m.foreign.setUpstreams(msg.Upstreams, msg.UpErr)
 		m.foreign.resize(m.width, m.bodyHeightFor(m.height))
 		return m, nil
 
@@ -370,6 +384,7 @@ func (m RootModel) applyForm(msg FormSubmitMsg) (tea.Model, tea.Cmd) {
 func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 	zones := cloneZones(m.zones)
 	ctl := m.ctl
+	cfg := m.cfg
 	m.state = StateForeign
 	m.foreign = ForeignModel{}
 	return m, func() tea.Msg {
@@ -381,8 +396,17 @@ func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 		if err != nil {
 			return ForeignLoadedMsg{Err: err}
 		}
+		// Fresh read of the include graph for the upstreams tab; a failure is
+		// non-fatal and shown as a notice in that tab.
+		var ups []UpstreamRow
+		var upErr string
+		if eff, err := config.ReadEffective(cfg.MainConfPath()); err != nil {
+			upErr = err.Error()
+		} else {
+			ups = buildUpstreamRows(eff, cfg.FragmentPath())
+		}
 		fz, fr := foreignEntries(zones, rtZones, rtRRs)
-		return ForeignLoadedMsg{Zones: fz, RRs: fr}
+		return ForeignLoadedMsg{Zones: fz, RRs: fr, Upstreams: ups, UpErr: upErr}
 	}
 }
 

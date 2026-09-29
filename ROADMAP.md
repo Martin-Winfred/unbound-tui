@@ -10,24 +10,29 @@ directive we do not model is passed through verbatim.
 
 ## Decisions to settle
 
-- [ ] Ownership boundary: **own our fragment only (current, recommended)** vs
+- [x] Ownership boundary: **own our fragment only (current, recommended)** vs
       own the whole `unbound.conf`.
-- [ ] Generalize "disabled" to any entry (comment it out), not just
+      Settled: **read broad / write narrow** — the full config is visible
+      read-only, but writes go only to our fragment.
+- [x] Generalize "disabled" to any entry (comment it out), not just
       `local-zone` / `local-data`.
-- [ ] Duplicate sections: `forward-zone` / `stub-zone` are distinguished by
+      Settled: disabled is generalized to **any entry**, comment-preserved.
+- [x] Duplicate sections: `forward-zone` / `stub-zone` are distinguished by
       `name`; error or warn on duplicates.
+      Settled: duplicates are **modeled faithfully** and rejected at apply by
+      `ValidateFragment`.
 
 ## M1 - Data model (config)
 
-- [ ] `Fragment{Sections []Section}`, `Section{Kind, Entries []Entry}`,
+- [x] `Fragment{Sections []Section}`, `Section{Kind, Entries []Entry}`,
       `Entry{Key, Value string, Disabled bool}`.
-- [ ] Parser reads the fragment into sections/entries, **preserving unknown
+- [x] Parser reads the fragment into sections/entries, **preserving unknown
       directives verbatim**; handles quoting and repeated keys.
-- [ ] Serializer is deterministic and preserves unknown directives; disabled
+- [x] Serializer is deterministic and preserves unknown directives; disabled
       entries are written as comments (folding in the existing disabled block).
-- [ ] Backward compatible: today's `local-zone` / `local-data` fragments load
+- [x] Backward compatible: today's `local-zone` / `local-data` fragments load
       unchanged.
-- [ ] Round-trip tests (parse/serialize identity; unknown directives; disabled;
+- [x] Round-trip tests (parse/serialize identity; unknown directives; disabled;
       quotes).
 
 ## M2 - Generic editor UI (model)

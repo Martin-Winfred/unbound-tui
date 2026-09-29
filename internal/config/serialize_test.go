@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
+	"github.com/Martin-Winfred/unbound-tui/internal/validate"
 )
 
 // goldenFragment is the synthetic model pinned by the serializer golden test:
@@ -98,6 +99,43 @@ forward-addr: 192.0.2.53
 				}
 			}
 		})
+	}
+}
+
+// TestRoundTripProseInDisabledBlock pins the M1 polish fix: a prose comment
+// inside the disabled block is not a directive, so it is absent from the
+// model, survives a round trip, and no longer blocks ValidateFragment at
+// apply time.
+func TestRoundTripProseInDisabledBlock(t *testing.T) {
+	const src = `server:
+local-zone: "example.com" refuse
+
+# unbound-tui:disabled
+# disabled while on vacation
+# local-data: "old.example. 300 IN A 192.0.2.2"
+`
+	f, err := parseFragment([]byte(src))
+	if err != nil {
+		t.Fatalf("parseFragment: %v", err)
+	}
+	for _, s := range f.Sections {
+		for _, e := range s.Entries {
+			if strings.Contains(e.Key, " ") {
+				t.Fatalf("prose leaked into the model as entry %q", e.Key)
+			}
+		}
+	}
+
+	out := SerializeFragment(f)
+	back, err := parseFragment(out)
+	if err != nil {
+		t.Fatalf("parseFragment(SerializeFragment(f)): %v", err)
+	}
+	if !reflect.DeepEqual(back, f) {
+		t.Errorf("round trip =\n%+v\nwant\n%+v", back, f)
+	}
+	if err := validate.ValidateFragment(f); err != nil {
+		t.Errorf("ValidateFragment(parsed) = %v, want nil (apply must be unblocked)", err)
 	}
 }
 

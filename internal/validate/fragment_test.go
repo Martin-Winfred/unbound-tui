@@ -46,6 +46,20 @@ func TestValidateFragment(t *testing.T) {
 			wantErr: `section server: entry 2: invalid key ""`,
 		},
 		{
+			name:    "section kind with space rejected",
+			f:       fragOf(domain.Section{Kind: "foo bar", Entries: []domain.Entry{{Key: "x", Value: "y"}}}),
+			wantErr: `invalid section kind "foo bar"`,
+		},
+		{
+			name:    "section kind with punctuation rejected",
+			f:       fragOf(domain.Section{Kind: "server:", Entries: []domain.Entry{{Key: "x", Value: "y"}}}),
+			wantErr: `invalid section kind "server:"`,
+		},
+		{
+			name: "empty synthetic section kind allowed",
+			f:    fragOf(domain.Section{Kind: "", Entries: []domain.Entry{{Key: "include", Value: `"/x.conf"`}}}),
+		},
+		{
 			name:    "key with space names the key",
 			f:       fragOf(domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "foo bar", Value: "x"}}}),
 			wantErr: `section server: entry 1: invalid key "foo bar"`,

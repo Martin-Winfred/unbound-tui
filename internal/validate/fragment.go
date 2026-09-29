@@ -21,8 +21,9 @@ var namedKinds = map[string]bool{
 }
 
 // ValidateFragment is the single pre-write gate for the generic fragment
-// model. It rejects malformed directive keys and values and duplicate named
-// sections before anything reaches the fragment file or unbound-control.
+// model. It rejects malformed directive keys and values, malformed non-empty
+// section kinds, and duplicate named sections before anything reaches the
+// fragment file or unbound-control.
 //
 // Values stay deliberately permissive: quotes, spaces and '#' are legal (they
 // are the normal shape of local-zone/local-data values); only control
@@ -31,6 +32,9 @@ var namedKinds = map[string]bool{
 func ValidateFragment(f domain.Fragment) error {
 	seen := make(map[string][]string) // kind -> first-seen name per section
 	for _, s := range f.Sections {
+		if s.Kind != "" && !fragmentKeyRe.MatchString(s.Kind) {
+			return fmt.Errorf("invalid section kind %q", s.Kind)
+		}
 		kind := s.Kind
 		if kind == "" {
 			kind = "(top level)"

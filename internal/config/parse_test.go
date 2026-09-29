@@ -108,6 +108,42 @@ local-zone: "example.com" refuse
 			}},
 		},
 		{
+			name: "prose lines in disabled block are skipped",
+			src: `server:
+local-zone: "example.com" refuse
+
+# unbound-tui:disabled
+# disabled while on vacation
+# disabled for: vacation
+# local-data: "old.example. 300 IN A 192.0.2.2"
+`,
+			want: domain.Fragment{Sections: []domain.Section{{
+				Kind: "server",
+				Entries: []domain.Entry{
+					{Key: "local-zone", Value: `"example.com" refuse`},
+					{Key: "local-data", Value: `"old.example. 300 IN A 192.0.2.2"`, Disabled: true},
+				},
+			}}},
+		},
+		{
+			name: "directive-looking line in disabled block still parses",
+			src: `forward-zone:
+name: "."
+
+# unbound-tui:disabled
+# name: "."
+# forward-addr: 192.0.2.53
+`,
+			want: domain.Fragment{Sections: []domain.Section{{
+				Kind: "forward-zone",
+				Entries: []domain.Entry{
+					{Key: "name", Value: `"."`},
+					{Key: "name", Value: `"."`, Disabled: true},
+					{Key: "forward-addr", Value: "192.0.2.53", Disabled: true},
+				},
+			}}},
+		},
+		{
 			name: "CRLF",
 			src:  "server:\r\nlocal-zone: \"a.com\" refuse\r\n",
 			want: domain.Fragment{Sections: []domain.Section{{

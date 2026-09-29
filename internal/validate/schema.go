@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -226,11 +227,12 @@ func validatePort(port, whole string) error {
 	return nil
 }
 
-// parsePort parses a bare decimal port number and enforces [1, 65535]. Its
-// error names the accepted range and is shared by the address and bare-port
-// validators.
+// parsePort parses a decimal port number and enforces [1, 65535]. Parsing is
+// strict: surrounding whitespace is rejected, since a caller splitting
+// `host:port` or `ip@port` must not let a stray space through. Its error names
+// the accepted range and is shared by the address and bare-port validators.
 func parsePort(value string) (int, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(value))
+	n, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("invalid port %q, out of range [1, 65535]", value)
 	}
@@ -266,7 +268,7 @@ func validateCIDR(value string) error {
 func validateAccessCtrl(value string) error {
 	fields := strings.Fields(value)
 	if len(fields) != 2 {
-		return fmt.Errorf(`expected "<CIDR> <action>"`)
+		return errors.New(`expected "<CIDR> <action>"`)
 	}
 	if err := validateCIDR(fields[0]); err != nil {
 		return err

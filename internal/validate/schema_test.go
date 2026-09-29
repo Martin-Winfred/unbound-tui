@@ -89,6 +89,7 @@ func TestValidateValue(t *testing.T) {
 		{"addr ipv4 port", TypeAddr, "1.1.1.1:5353", ""},
 		{"addr port zero", TypeAddr, "1.1.1.1:0", "invalid port"},
 		{"addr port too big", TypeAddr, "1.1.1.1:70000", "invalid port"},
+		{"addr port space", TypeAddr, "1.1.1.1: 853", "invalid port"},
 		{"addr bad host", TypeAddr, "bad host", "invalid host"},
 		{"addr empty", TypeAddr, "", "empty address"},
 
@@ -118,6 +119,7 @@ func TestValidateValue(t *testing.T) {
 		{"upstream ipv6 port auth", TypeUpstream, "2001:db8::1@853#auth.name", ""},
 		{"upstream port zero", TypeUpstream, "192.0.2.53@0", "invalid port"},
 		{"upstream port too big", TypeUpstream, "192.0.2.53@70000", "invalid port"},
+		{"upstream port space", TypeUpstream, "192.0.2.53@ 853", "invalid port"},
 		{"upstream empty auth", TypeUpstream, "192.0.2.53#", "invalid auth"},
 		{"upstream auth whitespace", TypeUpstream, "192.0.2.53#au thor", "invalid auth"},
 		{"upstream not an ip", TypeUpstream, "not a host", "invalid address"},
@@ -129,6 +131,7 @@ func TestValidateValue(t *testing.T) {
 		{"host trailing dot", TypeHost, "a.b.example.", ""},
 		{"host empty label", TypeHost, "dns..example", "invalid host"},
 		{"host port zero", TypeHost, "dns.example@0", "invalid port"},
+		{"host port space", TypeHost, "dns.example@ 853", "invalid port"},
 		{"host leading hyphen", TypeHost, "-bad.example", "invalid host"},
 
 		// access-control: "<CIDR> <action>"
@@ -157,6 +160,8 @@ func TestValidateValue(t *testing.T) {
 		{"port negative", TypePort, "-1", "out of range [1, 65535]"},
 		{"port junk", TypePort, "53x", "out of range [1, 65535]"},
 		{"port empty", TypePort, "", "out of range [1, 65535]"},
+		{"port leading space", TypePort, " 53", "out of range [1, 65535]"},
+		{"port trailing space", TypePort, "53 ", "out of range [1, 65535]"},
 
 		// text
 		{"text plain", TypeText, "hello world", ""},

@@ -214,3 +214,28 @@ func TestViewSectionFormOverlay(t *testing.T) {
 		})
 	}
 }
+
+// TestConfirmMessages pins the remaining confirmation copy: the quit prompt and
+// the record delete prompt, including the empty-name -> @ substitution.
+func TestConfirmMessages(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.zones = []domain.Zone{{
+		Name: "example.com.", Type: "transparent",
+		Records: []domain.Record{{Name: "", RType: "A", Value: "192.0.2.1", TTL: 300}},
+	}}
+	cases := []struct {
+		kind string
+		want string
+	}{
+		{"quit", "Unsaved changes - quit anyway?"},
+		{"record", "Delete record @ A 192.0.2.1?"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			m.confirmKind, m.confirmZone, m.confirmRec = tc.kind, 0, 0
+			if got := m.confirmMessage(); got != tc.want {
+				t.Errorf("confirmMessage(%q) = %q, want %q", tc.kind, got, tc.want)
+			}
+		})
+	}
+}

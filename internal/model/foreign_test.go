@@ -486,3 +486,108 @@ func TestForeignLoadedMsgBackfillsScalarIndex(t *testing.T) {
 		}
 	})
 }
+
+// TestForeignModelNavigation drives the movement keys on both tabs and pins the
+// clamping: the runtime-zone pane, the RR detail pane, and the upstreams tab.
+func TestForeignModelNavigation(t *testing.T) {
+	f := newForeignModel(
+		[]domain.LocalZone{
+			{Name: "a.example.", Type: "static"},
+			{Name: "b.example.", Type: "static"},
+		},
+		[]string{
+			"x.a.example. 300 IN A 192.0.2.1",
+			"y.a.example. 300 IN A 192.0.2.2",
+			"p.b.example. 300 IN A 192.0.2.3",
+		},
+		nil,
+	)
+	f.setUpstreams([]UpstreamRow{
+		{Kind: "forward-zone", Name: "u1.", Source: "a.conf"},
+		{Kind: "stub-zone", Name: "u2.", Source: "b.conf"},
+	}, "")
+	f.resize(80, 8)
+
+	// Runtime-zone pane.
+	f, _ = f.Update(key("down"))
+	if f.zCur != 1 {
+		t.Fatalf("zone down: zCur = %d, want 1", f.zCur)
+	}
+	f, _ = f.Update(key("down")) // clamp at the last zone
+	if f.zCur != 1 {
+		t.Fatalf("zone down at bottom: zCur = %d, want 1", f.zCur)
+	}
+	f, _ = f.Update(key("up"))
+	f, _ = f.Update(key("up")) // clamp at the first zone
+	if f.zCur != 0 {
+		t.Fatalf("zone up at top: zCur = %d, want 0", f.zCur)
+	}
+	f, _ = f.Update(key("G"))
+	if f.zCur != 1 {
+		t.Fatalf("zone G: zCur = %d, want 1", f.zCur)
+	}
+	f, _ = f.Update(key("g"))
+	if f.zCur != 0 {
+		t.Fatalf("zone g: zCur = %d, want 0", f.zCur)
+	}
+
+	// RR detail pane: tab focuses it.
+	f, _ = f.Update(key("tab"))
+	if !f.focusRR {
+		t.Fatal("tab did not focus the RR pane")
+	}
+	f, _ = f.Update(key("down"))
+	if f.rCur != 1 {
+		t.Fatalf("rr down: rCur = %d, want 1", f.rCur)
+	}
+	f, _ = f.Update(key("down")) // clamp at the last RR
+	if f.rCur != 1 {
+		t.Fatalf("rr down at bottom: rCur = %d, want 1", f.rCur)
+	}
+	f, _ = f.Update(key("up"))
+	f, _ = f.Update(key("up")) // clamp at the first RR
+	if f.rCur != 0 {
+		t.Fatalf("rr up at top: rCur = %d, want 0", f.rCur)
+	}
+	f, _ = f.Update(key("G"))
+	if f.rCur != 1 {
+		t.Fatalf("rr G: rCur = %d, want 1", f.rCur)
+	}
+
+	// Upstreams tab.
+	f, _ = f.Update(key("u"))
+	if f.tab != 1 {
+		t.Fatalf("tab after u = %d, want 1", f.tab)
+	}
+	f, _ = f.Update(key("down"))
+	if f.upCur != 1 {
+		t.Fatalf("upstream down: upCur = %d, want 1", f.upCur)
+	}
+	f, _ = f.Update(key("down")) // clamp at the last upstream
+	if f.upCur != 1 {
+		t.Fatalf("upstream down at bottom: upCur = %d, want 1", f.upCur)
+	}
+	f, _ = f.Update(key("up"))
+	f, _ = f.Update(key("up")) // clamp at the first upstream
+	if f.upCur != 0 {
+		t.Fatalf("upstream up: upCur = %d, want 0", f.upCur)
+	}
+	f, _ = f.Update(key("G"))
+	if f.upCur != 1 {
+		t.Fatalf("upstream G: upCur = %d, want 1", f.upCur)
+	}
+
+	// Empty panes: jumping to the bottom must pin the cursor at 0, not -1.
+	f.setUpstreams(nil, "")
+	f, _ = f.Update(key("G"))
+	if f.upCur != 0 {
+		t.Fatalf("upstream G on an empty list: upCur = %d, want 0", f.upCur)
+	}
+	empty := newForeignModel([]domain.LocalZone{{Name: "empty.example.", Type: "static"}}, nil, nil)
+	empty.resize(80, 8)
+	empty, _ = empty.Update(key("tab")) // focus the (empty) RR pane
+	empty, _ = empty.Update(key("G"))
+	if empty.rCur != 0 {
+		t.Fatalf("rr G on an empty list: rCur = %d, want 0", empty.rCur)
+	}
+}

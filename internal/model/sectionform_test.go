@@ -585,3 +585,20 @@ func TestApplySectionFormKeepsStateError(t *testing.T) {
 		t.Errorf("fragment changed under StateError:\n got %+v\nwant %+v", got.frag, before)
 	}
 }
+
+// TestSectionFormPrevWraps pins shift+tab/up walking the specialized form's
+// fields backwards and wrapping at the first field.
+func TestSectionFormPrevWraps(t *testing.T) {
+	sf := newSectionForm(forwardSection("192.0.2.53"), 0)
+	if len(sf.inputs) < 2 {
+		t.Fatalf("form has %d inputs, want at least 2", len(sf.inputs))
+	}
+	sf, _ = sf.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if sf.focusIndex != len(sf.inputs)-1 {
+		t.Fatalf("focusIndex after shift+tab = %d, want %d (wrapped)", sf.focusIndex, len(sf.inputs)-1)
+	}
+	sf, _ = sf.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if sf.focusIndex != len(sf.inputs)-2 {
+		t.Fatalf("focusIndex after up = %d, want %d", sf.focusIndex, len(sf.inputs)-2)
+	}
+}

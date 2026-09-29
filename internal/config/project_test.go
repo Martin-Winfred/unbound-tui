@@ -359,3 +359,28 @@ func TestZonesFromFragmentMalformedEntry(t *testing.T) {
 		})
 	}
 }
+
+// TestIsEmptyNameLocalZone pins the projection predicate behind the empty-name
+// skip. Only a value whose unquoted name token is actually empty counts;
+// whitespace is a (weird but real) name, and an unparseable value is not
+// empty-name — the projection surfaces it as an error instead.
+func TestIsEmptyNameLocalZone(t *testing.T) {
+	cases := []struct {
+		value string
+		want  bool
+	}{
+		{`""`, true},
+		{`"" static`, true},
+		{`"example.com." transparent`, false},
+		{`" " static`, false},
+		{`"unterminated`, false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			if got := IsEmptyNameLocalZone(tc.value); got != tc.want {
+				t.Errorf("IsEmptyNameLocalZone(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}

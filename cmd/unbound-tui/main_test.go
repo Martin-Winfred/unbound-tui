@@ -72,3 +72,16 @@ func TestRunVersionFlag(t *testing.T) {
 		t.Errorf("version output = %q, want it to contain unbound-tui", out.String())
 	}
 }
+
+// TestRunBootError pins that a -config path that does not exist fails boot and
+// is returned by run (main prints it and exits 1) instead of starting the TUI
+// against an unreadable config.
+func TestRunBootError(t *testing.T) {
+	err := run([]string{"-config", filepath.Join(t.TempDir(), "absent.conf")}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("run with a missing -config = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), "unbound config not found") {
+		t.Errorf("error = %v, want it to name the missing config", err)
+	}
+}

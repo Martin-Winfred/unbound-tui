@@ -199,3 +199,40 @@ func TestWriteFragmentValidatesBeforeDisk(t *testing.T) {
 		t.Errorf("valid fragment must create the file: %v", statErr)
 	}
 }
+
+// TestIncludeMatches pins the include-glob predicate behind CheckInclude:
+// literal containment, a syntactically matching glob (which works before the
+// fragment exists), a glob that only matches once paths are resolved, and the
+// non-matches (empty target, plain mismatch, invalid pattern).
+func TestIncludeMatches(t *testing.T) {
+	dir := t.TempDir()
+	frag := filepath.Join(dir, "unbound-tui.conf")
+	if err := os.WriteFile(frag, []byte("server:\n"), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+	// An unresolved path for the same file: filepath.Match cannot cross the
+	// extra separator, so only the Abs-normalized glob comparison can match it.
+	dotted := dir + "/../" + filepath.Base(dir) + "/unbound-tui.conf"
+
+	cases := []struct {
+		name     string
+		target   string
+		fragment string
+		want     bool
+	}{
+		{"literal path", frag, frag, true},
+		{"glob matches the fragment", filepath.Join(dir, "*.conf"), frag, true},
+		{"glob matches a fragment that does not exist yet", filepath.Join(dir, "*.conf"), filepath.Join(dir, "later.conf"), true},
+		{"resolved path resolves to the fragment", filepath.Join(dir, "*.conf"), dotted, true},
+		{"plain path that differs", filepath.Join(dir, "other.conf"), frag, false},
+		{"empty target", "", frag, false},
+		{"invalid glob pattern", "[", frag, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := includeMatches(tc.target, tc.fragment); got != tc.want {
+				t.Errorf("includeMatches(%q, %q) = %v, want %v", tc.target, tc.fragment, got, tc.want)
+			}
+		})
+	}
+}

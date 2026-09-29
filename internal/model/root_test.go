@@ -1047,3 +1047,117 @@ func TestCloneZonesIsIndependent(t *testing.T) {
 		t.Errorf("clone mutated the original: %+v", orig)
 	}
 }
+
+// TestZonesViewNavigation drives every movement key in the Local data view and
+// pins cursor clamping at both ends, for the zone pane and the record pane. A
+// short terminal (height 8) makes pageSize 2, so the ctrl+d/ctrl+u jumps are
+// observable without a tall fixture.
+func TestZonesViewNavigation(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.zones = []domain.Zone{
+		{Name: "a.example.", Type: "transparent", Records: []domain.Record{
+			{Name: "r1", RType: "A", Value: "192.0.2.1", TTL: 300},
+			{Name: "r2", RType: "A", Value: "192.0.2.2", TTL: 300},
+			{Name: "r3", RType: "A", Value: "192.0.2.3", TTL: 300},
+		}},
+		{Name: "b.example.", Type: "transparent"},
+		{Name: "c.example.", Type: "transparent"},
+	}
+	m.width, m.height = 80, 8
+	if got := m.pageSize(); got != 2 {
+		t.Fatalf("pageSize = %d, want 2 for the fixture height", got)
+	}
+
+	// Zone pane (starts focused).
+	m.zoneFocused = true
+	m = asRoot(t, mustUpdate(t, m, key("k"))) // moveUp clamps at the top
+	if m.zoneCursor != 0 {
+		t.Fatalf("k at top: zoneCursor = %d, want 0", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("j"))) // moveDown
+	if m.zoneCursor != 1 || m.recCursor != 0 {
+		t.Fatalf("j: zoneCursor/recCursor = %d/%d, want 1/0", m.zoneCursor, m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("k"))) // moveUp back off the second zone
+	if m.zoneCursor != 0 {
+		t.Fatalf("k: zoneCursor = %d, want 0", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("j")))
+	m = asRoot(t, mustUpdate(t, m, key("j"))) // moveDown clamps at the bottom
+	if m.zoneCursor != 2 {
+		t.Fatalf("j at bottom: zoneCursor = %d, want 2", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("g"))) // moveTop
+	if m.zoneCursor != 0 {
+		t.Fatalf("g: zoneCursor = %d, want 0", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("G"))) // moveBottom
+	if m.zoneCursor != 2 {
+		t.Fatalf("G: zoneCursor = %d, want 2", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})) // movePageUp
+	if m.zoneCursor != 0 {
+		t.Fatalf("ctrl+u: zoneCursor = %d, want 0", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})) // clamps at the top
+	if m.zoneCursor != 0 {
+		t.Fatalf("ctrl+u at top: zoneCursor = %d, want 0", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})) // movePageDown
+	if m.zoneCursor != 2 {
+		t.Fatalf("ctrl+d: zoneCursor = %d, want 2", m.zoneCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})) // clamps at the bottom
+	if m.zoneCursor != 2 {
+		t.Fatalf("ctrl+d at bottom: zoneCursor = %d, want 2", m.zoneCursor)
+	}
+
+	// Record pane: tab moves focus off the zone pane.
+	m = asRoot(t, mustUpdate(t, m, key("tab")))
+	if m.zoneFocused {
+		t.Fatal("tab did not move focus to the record pane")
+	}
+	m.zoneCursor = 0
+	m = asRoot(t, mustUpdate(t, m, key("j"))) // moveDown
+	if m.recCursor != 1 {
+		t.Fatalf("record j: recCursor = %d, want 1", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("j")))
+	m = asRoot(t, mustUpdate(t, m, key("j"))) // moveDown clamps at the last record
+	if m.recCursor != 2 {
+		t.Fatalf("record j at bottom: recCursor = %d, want 2", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("k"))) // moveUp
+	if m.recCursor != 1 {
+		t.Fatalf("record k: recCursor = %d, want 1", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("k")))
+	m = asRoot(t, mustUpdate(t, m, key("k"))) // moveUp clamps at the top
+	if m.recCursor != 0 {
+		t.Fatalf("record k at top: recCursor = %d, want 0", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("G"))) // moveBottom
+	if m.recCursor != 2 {
+		t.Fatalf("record G: recCursor = %d, want 2", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, key("g"))) // moveTop
+	if m.recCursor != 0 {
+		t.Fatalf("record g: recCursor = %d, want 0", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})) // movePageDown
+	if m.recCursor != 2 {
+		t.Fatalf("record ctrl+d: recCursor = %d, want 2", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})) // clamps at the last record
+	if m.recCursor != 2 {
+		t.Fatalf("record ctrl+d at bottom: recCursor = %d, want 2", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})) // movePageUp
+	if m.recCursor != 0 {
+		t.Fatalf("record ctrl+u: recCursor = %d, want 0", m.recCursor)
+	}
+	m = asRoot(t, mustUpdate(t, m, tea.KeyMsg{Type: tea.KeyCtrlU})) // clamps at the top
+	if m.recCursor != 0 {
+		t.Fatalf("record ctrl+u at top: recCursor = %d, want 0", m.recCursor)
+	}
+}

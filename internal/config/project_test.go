@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -266,6 +268,51 @@ func TestZonesFromFragmentNonASCIIOwnership(t *testing.T) {
 				t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, tt.want)
 			}
 		})
+	}
+}
+
+// TestZonesFromFragmentSkipsEmptyNameLocalZone pins the restored empty-name
+// guard: a local-zone entry whose unquoted name token is empty is skipped by
+// the projection, not normalized into the root zone "." (FQDN("") == ".").
+func TestZonesFromFragmentSkipsEmptyNameLocalZone(t *testing.T) {
+	zones := project(t, `server:
+local-zone: ""
+local-zone: "example.com." static
+`)
+	want := []domain.Zone{{Name: "example.com.", Type: "static"}}
+	if !reflect.DeepEqual(zones, want) {
+		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
+	}
+}
+
+// TestParseFragmentEmptyNameLocalZoneRoundTrips pins the skip and the raw
+// entry's survival through the full ParseFragment file path: the projection
+// drops the empty-name zone, but the entry stays in the fragment so a
+// serialize/parse round trip is unchanged.
+func TestParseFragmentEmptyNameLocalZoneRoundTrips(t *testing.T) {
+	const src = "server:\nlocal-zone: \"\"\nlocal-zone: \"example.com.\" static\n"
+	path := filepath.Join(t.TempDir(), "frag.conf")
+	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+	f, err := ParseFragment(path)
+	if err != nil {
+		t.Fatalf("ParseFragment: %v", err)
+	}
+	zones, err := ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
+	want := []domain.Zone{{Name: "example.com.", Type: "static"}}
+	if !reflect.DeepEqual(zones, want) {
+		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
+	}
+	back, err := parseFragment(SerializeFragment(f))
+	if err != nil {
+		t.Fatalf("parseFragment(SerializeFragment(f)): %v", err)
+	}
+	if !reflect.DeepEqual(back, f) {
+		t.Errorf("round trip =\n%+v\nwant\n%+v", back, f)
 	}
 }
 

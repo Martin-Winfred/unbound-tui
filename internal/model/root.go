@@ -143,6 +143,11 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.zones = zones
 		m.clampCursors()
+		// The projection skips empty-name local-zone entries; surface that
+		// once at load so the entry is not lost silently on the next rewrite.
+		if hasEmptyNameLocalZone(m.frag) {
+			m.notice = "empty-name local-zone entry ignored"
+		}
 		m.state = StateReady
 		return m, nil
 
@@ -751,6 +756,21 @@ func recordLabel(r domain.Record) string {
 		name = "@"
 	}
 	return fmt.Sprintf("%s %s %s", name, r.RType, r.Value)
+}
+
+// hasEmptyNameLocalZone reports whether any local-zone entry in the fragment
+// has an empty unquoted name token (the projection skips such entries). It
+// mirrors the projection's predicate via config.IsEmptyNameLocalZone and, like
+// the projection, scans every section's entries regardless of section kind.
+func hasEmptyNameLocalZone(f domain.Fragment) bool {
+	for _, s := range f.Sections {
+		for _, e := range s.Entries {
+			if e.Key == "local-zone" && config.IsEmptyNameLocalZone(e.Value) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasZone reports whether a zone with the same (case-insensitive) name exists.

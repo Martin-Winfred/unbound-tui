@@ -75,7 +75,8 @@ func sectionLabel(kind string) string {
 }
 
 // parseZoneValue parses `"<name>" <type>` (the raw value of a local-zone
-// entry); a missing type defaults to transparent.
+// entry); a missing type defaults to transparent. An empty name token leaves
+// name "" (rather than FQDN's root "."), which attachRecords then skips.
 func parseZoneValue(value string) (zoneDecl, error) {
 	name, tail, err := cutToken(value)
 	if err != nil {
@@ -85,7 +86,21 @@ func parseZoneValue(value string) (zoneDecl, error) {
 	if typ == "" {
 		typ = "transparent"
 	}
-	return zoneDecl{name: domain.FQDN(name), typ: typ}, nil
+	z := zoneDecl{typ: typ}
+	if name != "" {
+		z.name = domain.FQDN(name)
+	}
+	return z, nil
+}
+
+// IsEmptyNameLocalZone reports whether value (a local-zone entry's value) has
+// an empty unquoted name token. ZonesFromFragment skips such entries instead
+// of normalizing the empty name into the root zone ".". A value whose token
+// cannot be cut (for example an unterminated quote) is not empty-name: the
+// projection surfaces that as an error instead.
+func IsEmptyNameLocalZone(value string) bool {
+	name, _, err := cutToken(value)
+	return err == nil && name == ""
 }
 
 // parseDataValue parses `"<RR>"` (the raw value of a local-data entry) into

@@ -990,6 +990,51 @@ func TestInitLoadsScalarIndex(t *testing.T) {
 	}
 }
 
+// TestInitWarnsOnEmptyNameLocalZone pins the one-time load warning: an
+// empty-name local-zone entry is skipped by the projection (so only the
+// normal zones load) but still sets a notice and stays in the fragment.
+func TestInitWarnsOnEmptyNameLocalZone(t *testing.T) {
+	m, _ := newTestModel(t)
+	src := "server:\n" +
+		"local-zone: \"\"\n" +
+		"local-zone: \"example.com.\" static\n"
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte(src), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+
+	loaded := m.Init()().(ZonesLoadedMsg)
+	m = asRoot(t, mustUpdate(t, m, loaded))
+	if len(m.zones) != 1 || m.zones[0].Name != "example.com." {
+		t.Errorf("zones = %+v, want only example.com.", m.zones)
+	}
+	if got := strings.Count(m.notice, "empty-name local-zone entry ignored"); got != 1 {
+		t.Errorf("notice = %q, want exactly one empty-name warning", m.notice)
+	}
+	if !hasEntry(m.frag, "local-zone", `""`) {
+		t.Errorf("frag = %+v, want the raw empty-name entry retained", m.frag)
+	}
+	if out := string(config.SerializeFragment(m.frag)); !strings.Contains(out, `local-zone: ""`) {
+		t.Errorf("serialized fragment lost the raw empty-name entry:\n%s", out)
+	}
+}
+
+// TestInitNoWarnOnCleanFragment pins that a fragment without an empty-name
+// local-zone entry sets no notice.
+func TestInitNoWarnOnCleanFragment(t *testing.T) {
+	m, _ := newTestModel(t)
+	src := "server:\n" +
+		"local-zone: \"example.com.\" static\n"
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte(src), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+
+	loaded := m.Init()().(ZonesLoadedMsg)
+	m = asRoot(t, mustUpdate(t, m, loaded))
+	if m.notice != "" {
+		t.Errorf("notice = %q, want empty on a clean fragment", m.notice)
+	}
+}
+
 func TestCloneZonesIsIndependent(t *testing.T) {
 	orig := []domain.Zone{{
 		Name: "example.com.", Type: "transparent",

@@ -52,12 +52,13 @@ directive we do not model is passed through verbatim.
 
 ## M3 - forward-zone / stub-zone (immediate need)
 
-- [ ] Model and parsing: `name`, `forward-addr` / `forward-host`,
+- [x] Model and parsing: `name`, `forward-addr` / `forward-host`,
       `forward-tls-upstream`, `forward-first`; `stub-addr` / `stub-host`,
       `stub-prime`, `stub-first`.
-- [ ] Forms: add/remove upstream addresses, DoT toggle, `tls-cert-bundle` path.
-- [ ] Validation: `IP[@port][#auth]`, host, booleans, port range.
-- [ ] **Conflict detection**: read the other configuration (read-only) and
+- [x] Forms: add/remove upstream addresses, DoT toggle, `tls-cert-bundle` path
+      (tls-cert-bundle deferred to M4).
+- [x] Validation: `IP[@port][#auth]`, host, booleans, port range.
+- [x] **Conflict detection**: read the other configuration (read-only) and
       warn/refuse when a `forward-zone` / `stub-zone` with the same name
       already exists (avoids Unbound's "duplicate" error).
 

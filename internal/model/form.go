@@ -21,6 +21,11 @@ const (
 	FormAddRecord
 	FormEditTTL
 	FormSetType
+	// Config-view forms (Task 7). They reuse RecordForm's inputs and key
+	// handling but keep their own submit path (see configform.go).
+	FormAddSection
+	FormAddEntry
+	FormEditEntry
 )
 
 // RecordForm is the input form. Inputs are pointers so rune edits survive
@@ -235,6 +240,12 @@ func (f RecordForm) title() string {
 		return "Edit TTL"
 	case FormSetType:
 		return "Change zone type"
+	case FormAddSection:
+		return "New section"
+	case FormAddEntry:
+		return "New entry"
+	case FormEditEntry:
+		return "Edit entry"
 	}
 	return "Form"
 }

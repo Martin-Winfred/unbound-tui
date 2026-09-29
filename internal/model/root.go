@@ -47,7 +47,8 @@ type RootModel struct {
 	lastError error
 	notice    string
 
-	form RecordForm
+	form    RecordForm
+	cfgForm configFormCtx // target of the active Config-view form
 
 	// delete/quit confirmation context; kinds: "zone", "record",
 	// "section", "entry", "quit". For "entry", confirmZone holds the
@@ -89,7 +90,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleConfirm(msg)
 		case StateForm:
 			var cmd tea.Cmd
-			m.form, cmd = m.form.Update(msg)
+			m.form, cmd = m.updateForm(msg)
 			return m, cmd
 		case StateForeign:
 			var cmd tea.Cmd
@@ -138,6 +139,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FormSubmitMsg:
 		return m.applyForm(msg)
 
+	case ConfigFormSubmitMsg:
+		return m.applyConfigForm(msg)
+
 	case ForeignCloseMsg:
 		m.state = StateReady
 		return m, nil
@@ -181,8 +185,8 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// The Config view routes movement, focus and its own lifecycle keys
-	// (d/D/space) to its panes; a/e land in Task 7.
+	// The Config view routes movement, focus, its own lifecycle keys
+	// (d/D/space) and the a/A/e forms to its panes.
 	if m.view == ViewConfig {
 		switch action {
 		case actionUp:
@@ -199,6 +203,10 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfgPage(-1)
 		case actionTogglePane:
 			m.cfgView.SecFocused = !m.cfgView.SecFocused
+		case actionAddSection:
+			m.newSectionForm()
+		case actionAddZone:
+			m.newEntryForm(m.cfgView.SecCursor)
 		case actionDeleteRecord:
 			m.cfgDeleteEntry()
 		case actionDeleteZone:

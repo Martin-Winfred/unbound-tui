@@ -259,8 +259,8 @@ func (m *RootModel) cfgDeleteEntry() {
 }
 
 // cfgEditEntry is the `e` handler. A locked local-* row is skipped with the
-// shared notice; an unlocked row is a deliberate no-op until the entry form
-// lands in Task 7, so the Config view never routes `e` to the zones view.
+// shared notice; an unlocked row opens the typed edit form (configform.go), so
+// the Config view never routes `e` to the zones view.
 func (m *RootModel) cfgEditEntry() {
 	e, ok := m.focusedEntry()
 	if !ok {
@@ -270,7 +270,7 @@ func (m *RootModel) cfgEditEntry() {
 		m.notice = lockedNotice
 		return
 	}
-	m.notice = "entry editing is not available yet"
+	m.editEntryForm(m.cfgView.SecCursor, m.cfgView.EntCursor, e)
 }
 
 // deleteEntry removes the entry at [sectionIndex][entryIndex] from frag by

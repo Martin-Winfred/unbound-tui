@@ -513,7 +513,7 @@ func TestConfigEditEntryGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("unlocked is a pinned no-op until forms land", func(t *testing.T) {
+	t.Run("unlocked opens the edit form", func(t *testing.T) {
 		m, _ := newTestModel(t)
 		m = setConfigFragment(t, m, lifecycleFixture())
 		m.view = ViewConfig
@@ -521,14 +521,14 @@ func TestConfigEditEntryGuard(t *testing.T) {
 		before := m.frag
 
 		next := asRoot(t, mustUpdate(t, m, key("e")))
-		if next.notice != "entry editing is not available yet" {
-			t.Errorf("notice = %q, want the pinned placeholder notice", next.notice)
+		if next.state != StateForm || next.form.mode != FormEditEntry {
+			t.Fatalf("state/mode = %v/%v, want StateForm/FormEditEntry", next.state, next.form.mode)
 		}
-		if next.state != StateReady {
-			t.Errorf("state = %v, want StateReady", next.state)
+		if got := next.form.inputs[0].Value(); got != "edns-buffer-size" {
+			t.Errorf("edit form key = %q, want the focused entry's key", got)
 		}
 		if !reflect.DeepEqual(next.frag, before) {
-			t.Errorf("fragment changed: %+v", next.frag)
+			t.Errorf("opening the form changed the fragment: %+v", next.frag)
 		}
 	})
 }

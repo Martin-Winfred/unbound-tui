@@ -32,7 +32,10 @@ func newTestModel(t *testing.T) (RootModel, *fakeCtl) {
 	t.Helper()
 	dir := t.TempDir()
 	conf := filepath.Join(dir, "unbound.conf")
-	if err := os.WriteFile(conf, []byte("include: "+filepath.Join(dir, "frag.conf")+"\n"), 0644); err != nil {
+	// Mirror Debian's stub: include-toplevel with a glob. A literal include
+	// of our fragment would break the first apply, before the fragment file
+	// exists; the glob simply matches nothing until it is written.
+	if err := os.WriteFile(conf, []byte("include-toplevel: "+filepath.Join(dir, "*.conf")+"\n"), 0644); err != nil {
 		t.Fatalf("write conf: %v", err)
 	}
 	mgr, err := config.NewManager(conf)
@@ -248,6 +251,143 @@ func TestApplyRejectsInvalidModel(t *testing.T) {
 	}
 	if ctl.reloads != 0 {
 		t.Errorf("reloads = %d, want 0 on validation failure", ctl.reloads)
+	}
+}
+
+// writeForeignConf drops a foreign config file into the test's conf directory.
+// newTestModel's main conf glob-includes every *.conf there, so the file joins
+// the effective include graph without rewriting the main conf. It returns the
+// symlink-resolved path, which is the Source FindConflicts reports.
+func writeForeignConf(t *testing.T, m RootModel, name, content string) string {
+	t.Helper()
+	p := filepath.Join(filepath.Dir(m.cfg.FragmentPath()), name)
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatalf("write foreign %s: %v", name, err)
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return p
+	}
+	return resolved
+}
+
+// forwardZone builds a forward-zone section with one address, enough to make it
+// an active, identity-bearing section.
+func forwardZone(name string) domain.Section {
+	return domain.Section{Kind: "forward-zone", Entries: []domain.Entry{
+		{Key: "name", Value: fmt.Sprintf("%q", name)},
+		{Key: "forward-addr", Value: "192.0.2.99"},
+	}}
+}
+
+// TestApplyRefusesIncludeGraphConflict pins the apply-time hard refusal: when a
+// forward-zone we own collides by identity with one already declared elsewhere
+// in the include graph, apply must name the foreign source and stop before any
+// write or reload.
+func TestApplyRefusesIncludeGraphConflict(t *testing.T) {
+	m, ctl := newTestModel(t)
+	foreign := writeForeignConf(t, m, "foreign.conf",
+		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n")
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server"},
+		forwardZone("dup."),
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	want := `forward-zone "dup." already exists in ` + foreign
+	if !strings.Contains(errMsg.Error.Error(), want) {
+		t.Errorf("error %q missing %q", errMsg.Error.Error(), want)
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+	if _, err := os.Stat(m.cfg.FragmentPath()); !os.IsNotExist(err) {
+		t.Errorf("fragment file exists after a refused apply (stat err = %v)", err)
+	}
+}
+
+// TestApplyListsAllIncludeGraphConflicts pins that every collision is reported,
+// one line each, rather than only the first.
+func TestApplyListsAllIncludeGraphConflicts(t *testing.T) {
+	m, ctl := newTestModel(t)
+	foreign := writeForeignConf(t, m, "foreign.conf",
+		"forward-zone:\n  name: \"dup.\"\n  forward-addr: 192.0.2.53\n"+
+			"forward-zone:\n  name: \"also.\"\n  forward-addr: 192.0.2.54\n")
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server"},
+		forwardZone("dup."),
+		forwardZone("also."),
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	for _, name := range []string{"dup.", "also."} {
+		want := fmt.Sprintf("forward-zone %q already exists in %s", name, foreign)
+		if !strings.Contains(errMsg.Error.Error(), want) {
+			t.Errorf("error %q missing %q", errMsg.Error.Error(), want)
+		}
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+}
+
+// TestApplyProceedsWhenForeignNamesDiffer pins that the refusal is name-based:
+// a non-colliding foreign forward-zone must not block the apply.
+func TestApplyProceedsWhenForeignNamesDiffer(t *testing.T) {
+	m, ctl := newTestModel(t)
+	writeForeignConf(t, m, "foreign.conf",
+		"forward-zone:\n  name: \"other.\"\n  forward-addr: 192.0.2.53\n")
+	m = setConfigFragment(t, m, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server"},
+		forwardZone("dup."),
+	}})
+	m.dirty = true
+
+	msg := m.apply()()
+	if _, ok := msg.(AppliedMsg); !ok {
+		t.Fatalf("apply produced %T (%v), want AppliedMsg", msg, msg)
+	}
+	if ctl.reloads != 1 {
+		t.Errorf("reloads = %d, want 1", ctl.reloads)
+	}
+	if _, err := os.Stat(m.cfg.FragmentPath()); err != nil {
+		t.Errorf("fragment not written on a clean apply: %v", err)
+	}
+}
+
+// TestApplyRefusesWhenIncludeGraphUnreadable pins that a broken main config is
+// surfaced rather than silently written over: no write and no reload.
+func TestApplyRefusesWhenIncludeGraphUnreadable(t *testing.T) {
+	m, ctl := newTestModel(t)
+	if err := os.Remove(m.cfg.MainConfPath()); err != nil {
+		t.Fatalf("remove main conf: %v", err)
+	}
+	m.frag = domain.Fragment{Sections: []domain.Section{{Kind: "server"}}}
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	if !strings.Contains(errMsg.Error.Error(), "read config") {
+		t.Errorf("error %q does not name the read failure", errMsg.Error.Error())
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 when the include graph is unreadable", ctl.reloads)
+	}
+	if _, err := os.Stat(m.cfg.FragmentPath()); !os.IsNotExist(err) {
+		t.Errorf("fragment file exists after a refused apply (stat err = %v)", err)
 	}
 }
 

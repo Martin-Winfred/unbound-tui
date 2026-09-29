@@ -448,6 +448,24 @@ func (m RootModel) apply() tea.Cmd {
 		if err := validateModel(zones); err != nil {
 			return ErrorMsg{err}
 		}
+		// Hard refusal: never write a section that duplicates one already
+		// declared elsewhere in the include graph (Unbound would reject the
+		// reload). A main config we cannot flatten is surfaced too, so a
+		// broken graph is not silently written over.
+		eff, err := config.ReadEffective(cfg.MainConfPath())
+		if err != nil {
+			return ErrorMsg{fmt.Errorf("read effective config: %w", err)}
+		}
+		if conflicts := config.FindConflicts(frag, eff, cfg.FragmentPath()); len(conflicts) > 0 {
+			var b strings.Builder
+			for i, c := range conflicts {
+				if i > 0 {
+					b.WriteByte('\n')
+				}
+				fmt.Fprintf(&b, "%s %q already exists in %s", c.Kind, c.Name, c.Source)
+			}
+			return ErrorMsg{fmt.Errorf("cannot apply, conflicts with the include graph:\n%s", b.String())}
+		}
 		if err := cfg.WriteFragment(frag); err != nil {
 			return ErrorMsg{fmt.Errorf("write fragment: %w", err)}
 		}

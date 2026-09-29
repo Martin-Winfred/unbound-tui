@@ -57,13 +57,13 @@ func (m *Manager) Read() ([]domain.Zone, error) {
 	return ZonesFromFragment(m.base)
 }
 
-// Write serializes zones and installs them atomically, creating the parent
-// directory if needed.
+// Write merges zones into the stashed base fragment and installs the result
+// atomically, creating the parent directory if needed.
 func (m *Manager) Write(zones []domain.Zone) error {
 	if err := os.MkdirAll(filepath.Dir(m.fragmentPath), 0755); err != nil {
 		return fmt.Errorf("create fragment dir: %w", err)
 	}
-	return atomicWriteFile(m.fragmentPath, SerializeFragment(zones), 0644)
+	return atomicWriteFile(m.fragmentPath, SerializeFragment(FragmentFromZones(m.base, zones)), 0644)
 }
 
 // CheckInclude verifies (read-only) that the main config includes our

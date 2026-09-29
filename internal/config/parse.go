@@ -8,6 +8,11 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
+// disabledMarker introduces the block of commented-out (disabled) entries.
+// The parser enters disabled-block mode on it; the serializer emits it before
+// the grouped disabled entries.
+const disabledMarker = "# unbound-tui:disabled"
+
 // ParseFragment reads the fragment file into the generic section/entry model.
 // A missing file yields an empty Fragment and a nil error.
 func ParseFragment(path string) (domain.Fragment, error) {

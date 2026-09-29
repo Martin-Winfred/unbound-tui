@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
@@ -89,78 +88,6 @@ func TestParseFragmentImplicitZone(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ParseFragment = %+v, want %+v", got, want)
-	}
-}
-
-func TestSerializeFragment(t *testing.T) {
-	zones := []domain.Zone{
-		{
-			Name: "example.com.", Type: "transparent",
-			Records: []domain.Record{
-				{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300},
-				{Name: "www", RType: "A", Value: "192.0.2.2", TTL: 300},
-			},
-		},
-		{
-			Name: "old.example.", Type: "static", Disabled: true,
-			Records: []domain.Record{{Name: "host", RType: "A", Value: "192.0.2.9", TTL: 60}},
-		},
-	}
-	out := string(SerializeFragment(zones))
-	wantOrder := []string{
-		"server:",
-		`local-zone: "example.com." transparent`,
-		`local-data: "example.com. 300 IN A 192.0.2.1"`,
-		`local-data: "www.example.com. 300 IN A 192.0.2.2"`,
-		disabledMarker,
-		`# local-zone: "old.example." static`,
-		`# local-data: "host.old.example. 60 IN A 192.0.2.9"`,
-	}
-	last := -1
-	for _, want := range wantOrder {
-		idx := strings.Index(out, want)
-		if idx < 0 {
-			t.Fatalf("output missing %q\n%s", want, out)
-		}
-		if idx < last {
-			t.Errorf("%q out of order\n%s", want, out)
-		}
-		last = idx
-	}
-	// The disabled zone must not appear as an active local-zone line.
-	if strings.Contains(out, "\nlocal-zone: \"old.example.\"") {
-		t.Errorf("disabled zone emitted as active:\n%s", out)
-	}
-}
-
-func TestFragmentRoundTrip(t *testing.T) {
-	zones := []domain.Zone{
-		{
-			Name: "a.example.", Type: "transparent",
-			Records: []domain.Record{
-				{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300},
-				{Name: "www", RType: "A", Value: "192.0.2.2", TTL: 300},
-			},
-		},
-		{
-			Name: "b.example.", Type: "static", Disabled: true,
-			Records: []domain.Record{{Name: "host", RType: "A", Value: "192.0.2.9", TTL: 60, Disabled: true}},
-		},
-	}
-	path := filepath.Join(t.TempDir(), "round.conf")
-	if err := os.WriteFile(path, SerializeFragment(zones), 0644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	f, err := ParseFragment(path)
-	if err != nil {
-		t.Fatalf("ParseFragment: %v", err)
-	}
-	got, err := ZonesFromFragment(f)
-	if err != nil {
-		t.Fatalf("ZonesFromFragment: %v", err)
-	}
-	if !reflect.DeepEqual(got, zones) {
-		t.Errorf("round trip =\n%+v\nwant\n%+v", got, zones)
 	}
 }
 

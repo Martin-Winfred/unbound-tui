@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
@@ -28,7 +29,9 @@ const maxTTL = 604800 // 7 days
 
 // ValidateRecord validates a record in the context of the zone it belongs to.
 // It is the single entry point for every write path: the fragment file is
-// only ever produced from records that passed this check.
+// only ever produced from records that passed this check. TTL, type and rdata
+// are validated by ValidateRRLine (the owner by validRecordName above), so a
+// record and the local-data line it renders to accept the same values.
 func ValidateRecord(zone string, r domain.Record) error {
 	if err := ValidateZoneName(zone); err != nil {
 		return fmt.Errorf("zone: %w", err)
@@ -39,13 +42,50 @@ func ValidateRecord(zone string, r domain.Record) error {
 	if injectable(zone) || injectable(r.Name) || injectable(r.Value) {
 		return fmt.Errorf("record contains forbidden characters (quote/backslash/control/;/#)")
 	}
-	if !rtypeWhitelist[r.RType] {
-		return fmt.Errorf("unsupported record type %q", r.RType)
+	name := r.Name
+	if name == "" {
+		name = "@" // apex records render as the zone name, never an empty owner
 	}
-	if r.TTL < 0 || r.TTL > maxTTL {
-		return fmt.Errorf("ttl %d out of range [0, %d]", r.TTL, maxTTL)
+	return ValidateRRLine(fmt.Sprintf("%s %d %s %s", name, r.TTL, r.RType, r.Value))
+}
+
+// ValidateRRLine validates one local-data RR line: `owner ttl [class] rtype
+// rdata`, where the class (IN) is optional. A single pair of surrounding
+// double quotes is stripped first, since the raw value of a local-data entry
+// keeps them. The owner may be a relative name (as accepted by ValidateRecord)
+// or a fully-qualified name with a trailing dot, as unbound writes it.
+func ValidateRRLine(line string) error {
+	line = strings.TrimSpace(line)
+	if len(line) >= 2 && line[0] == '"' && line[len(line)-1] == '"' {
+		line = strings.TrimSpace(line[1 : len(line)-1])
 	}
-	return validateValue(r.RType, r.Value)
+	fields := strings.Fields(line)
+	if len(fields) < 4 {
+		return fmt.Errorf("invalid RR line %q: want owner ttl [class] rtype rdata", line)
+	}
+	owner := fields[0]
+	if !validRROwner(owner) {
+		return fmt.Errorf("invalid record name %q", owner)
+	}
+	ttl, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return fmt.Errorf("invalid ttl %q", fields[1])
+	}
+	if ttl < 0 || ttl > maxTTL {
+		return fmt.Errorf("ttl %d out of range [0, %d]", ttl, maxTTL)
+	}
+	i := 2
+	if strings.EqualFold(fields[i], "IN") {
+		i++
+	}
+	if len(fields) < i+2 {
+		return fmt.Errorf("invalid RR line %q: missing rtype or rdata", line)
+	}
+	rtype := strings.ToUpper(fields[i])
+	if !rtypeWhitelist[rtype] {
+		return fmt.Errorf("unsupported record type %q", rtype)
+	}
+	return validateValue(rtype, strings.Join(fields[i+1:], " "))
 }
 
 // ValidateZoneName validates a zone name (an optional trailing dot is allowed).
@@ -80,6 +120,16 @@ func validRecordName(name string) bool {
 		}
 	}
 	return true
+}
+
+// validRROwner accepts an owner as it appears on a local-data RR line: either
+// a relative record name (the ValidateRecord form) or a fully-qualified name
+// with a trailing dot.
+func validRROwner(name string) bool {
+	if name == "." {
+		return false
+	}
+	return validRecordName(strings.TrimSuffix(name, "."))
 }
 
 // injectable reports whether s contains a character that could escape the

@@ -69,6 +69,7 @@ func ValidateFragment(f domain.Fragment) error {
 func sectionName(s domain.Section) (string, bool) {
 	for _, e := range s.Entries {
 		if e.Key == "name" {
+			// One-quote-per-side is intentional (M5 consolidation): `""x""` and `"x"` are distinct identities, not duplicates; do not "fix" back.
 			return domain.NormalizeName(e.Value), true
 		}
 	}

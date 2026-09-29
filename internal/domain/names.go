@@ -5,7 +5,7 @@ import "strings"
 // NormalizeName returns the normalized identity spelling of a directive value:
 // the value with surrounding whitespace trimmed and exactly one leading and
 // one trailing double quote stripped. It is the single quote-trim authority
-// shared by the config, validate and model layers.
+// shared by the config and validate layers.
 //
 // The one-quote-per-side rule (not strings.Trim, which removes every quote) is
 // the semantics config.SectionKeyName pinned in M3 and is authoritative here.

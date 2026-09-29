@@ -285,6 +285,7 @@ func owningZoneName(owner string, zoneNames []string) string {
 	for _, z := range zoneNames {
 		lz := asciiLower(z)
 		if lo == lz || strings.HasSuffix(lo, "."+lz) {
+			// Strict > keeps the first declaration on an equal-length tie, so case-variant duplicate zones resolve deterministically.
 			if len(z) > len(best) {
 				best = z
 			}

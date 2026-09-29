@@ -342,7 +342,7 @@ func (m RootModel) helpText() string {
 		if m.view == ViewConfig {
 			return "c local data · tab pane · j/k move · g/G top/bottom · ctrl+d/u page · w apply · f foreign · q quit"
 		}
-		return "a add-zone · r add-record · e ttl · t type · space toggle · d/D delete · w apply · f foreign · q quit"
+		return "c config · a add-zone · r add-record · e ttl · t type · space toggle · d/D delete · w apply · f foreign · q quit"
 	}
 }
 

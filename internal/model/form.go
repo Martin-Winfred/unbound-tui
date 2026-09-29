@@ -21,7 +21,7 @@ const (
 	FormAddRecord
 	FormEditTTL
 	FormSetType
-	// Config-view forms (Task 7). They reuse RecordForm's inputs and key
+	// Config-view forms. They reuse RecordForm's inputs and key
 	// handling but keep their own submit path (see configform.go).
 	FormAddSection
 	FormAddEntry

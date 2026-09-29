@@ -18,7 +18,7 @@ type ConfigViewModel struct {
 
 // isLocked reports whether an entry is owned by the Local data view. Locked
 // rows render read-only in the Config view and never light the disabled
-// marker; Task 6 reuses this to skip mutating keys on them.
+// marker; mutating keys skip them.
 func isLocked(e domain.Entry) bool {
 	return e.Key == "local-zone" || e.Key == "local-data"
 }

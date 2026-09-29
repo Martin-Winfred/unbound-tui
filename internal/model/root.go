@@ -16,8 +16,8 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/validate"
 )
 
-// View selects which top-level pane the root model renders. Task 5 wires the
-// Config view in; until then the zero value is the zones view.
+// View selects which top-level pane the root model renders. The zero value is
+// the zones view.
 type View int
 
 const (
@@ -169,6 +169,12 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case actionApply:
 		if m.dirty {
+			// Re-project before writing: a hand-malformed local-* entry can
+			// survive in frag after its projection error was dismissed, so
+			// the dirty flag alone is not enough to authorise a write.
+			if _, err := config.ZonesFromFragment(m.frag); err != nil {
+				return m, func() tea.Msg { return ErrorMsg{fmt.Errorf("cannot apply: %w", err)} }
+			}
 			m.state = StateApplying
 			return m, m.apply()
 		}
@@ -285,6 +291,9 @@ func (m *RootModel) switchView() {
 		return
 	}
 	m.view = ViewConfig
+	// A Local-view mutation can shift the section layout (regenLocal inserts
+	// a server section at index 0), so re-clamp before the Config panes render.
+	m.clampCfgCursors()
 }
 
 func (m RootModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

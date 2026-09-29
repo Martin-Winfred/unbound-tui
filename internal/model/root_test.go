@@ -185,6 +185,57 @@ func TestAddZoneThenApplyWritesAndReloads(t *testing.T) {
 	}
 }
 
+// TestApplyRefusesMalformedFragment pins the hardened apply gate: after a
+// failed projection (StateError) has been dismissed, `w` must re-project the
+// fragment and refuse rather than writing a hand-malformed local-* value.
+func TestApplyRefusesMalformedFragment(t *testing.T) {
+	m, ctl := newTestModel(t)
+	m.frag = domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "edns-buffer-size", Value: "1232"},
+			{Key: "local-data", Value: `"unterminated`},
+		}},
+	}}
+	m.view = ViewConfig
+	m.cfgView = ConfigViewModel{SecFocused: false}
+	m.clampCfgCursors()
+
+	// Toggle the unlocked entry: the mutation marks the model dirty, then the
+	// re-projection fails and the model reports the error.
+	next := asRoot(t, mustUpdate(t, m, key(" ")))
+	if next.state != StateError || next.lastError == nil {
+		t.Fatalf("state/error = %v/%v, want StateError after the projection failure", next.state, next.lastError)
+	}
+	if !next.dirty {
+		t.Fatal("dirty = false after the Config mutation, want true")
+	}
+
+	// Any key dismisses the error; the dirty flag survives.
+	next = asRoot(t, mustUpdate(t, next, key("x")))
+	if next.state != StateReady {
+		t.Fatalf("state = %v, want StateReady after dismissing the error", next.state)
+	}
+
+	// Applying must re-check the fragment and refuse with an ErrorMsg.
+	applied, cmd := next.Update(key("w"))
+	next = asRoot(t, applied)
+	if next.state == StateApplying {
+		t.Fatal("apply started despite the malformed fragment")
+	}
+	if cmd == nil {
+		t.Fatal("apply produced no command, want an ErrorMsg")
+	}
+	if _, ok := cmd().(ErrorMsg); !ok {
+		t.Fatalf("apply produced %T, want ErrorMsg", cmd())
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+	if _, err := os.Stat(m.cfg.FragmentPath()); !os.IsNotExist(err) {
+		t.Errorf("fragment file exists after a refused apply (stat err = %v)", err)
+	}
+}
+
 func TestApplyRejectsInvalidModel(t *testing.T) {
 	m, ctl := newTestModel(t)
 	m.zones = []domain.Zone{{Name: "example.com.", Type: "transparent", Records: []domain.Record{

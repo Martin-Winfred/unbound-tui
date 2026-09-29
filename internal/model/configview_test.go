@@ -193,6 +193,41 @@ func TestConfigTogglePreservesCursors(t *testing.T) {
 	}
 }
 
+// TestConfigCursorsClampOnSwitchFromLocalView pins that switching into the
+// Config view re-clamps its cursors: a Local-view mutation regenerates the
+// fragment and can insert a server section at index 0, leaving the config
+// cursors pointing past the selected section's entries.
+func TestConfigCursorsClampOnSwitchFromLocalView(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.frag = domain.Fragment{Sections: []domain.Section{
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: `"."`},
+			{Key: "forward-addr", Value: "192.0.2.53"},
+		}},
+	}}
+	m.view = ViewZones
+	m.cfgView = ConfigViewModel{SecCursor: 0, EntCursor: 1, SecFocused: false}
+
+	// A Local-view mutation regenerates the fragment, inserting a server
+	// section at index 0; the section cursor now points at a shorter section.
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	if m.frag.Sections[0].Kind != "server" {
+		t.Fatalf("section 0 = %q, want server (inserted by regenLocal)", m.frag.Sections[0].Kind)
+	}
+
+	next := asRoot(t, mustUpdate(t, m, key("c")))
+	if next.view != ViewConfig {
+		t.Fatalf("view = %v, want ViewConfig", next.view)
+	}
+	if next.cfgView.SecCursor < 0 || next.cfgView.SecCursor >= len(next.frag.Sections) {
+		t.Fatalf("SecCursor = %d, out of range for %d sections", next.cfgView.SecCursor, len(next.frag.Sections))
+	}
+	sec := next.frag.Sections[next.cfgView.SecCursor]
+	if next.cfgView.EntCursor != 0 || next.cfgView.EntCursor >= len(sec.Entries) {
+		t.Errorf("EntCursor = %d, want 0 in range for %d entries", next.cfgView.EntCursor, len(sec.Entries))
+	}
+}
+
 func TestConfigTabFlipsFocus(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.view = ViewConfig
@@ -316,7 +351,7 @@ func TestConfigMovementOnEmptyPanes(t *testing.T) {
 }
 
 // TestConfigCursorsClampOnReload pins the clamp after an external fragment
-// change (only load mutates frag in Task 5).
+// change.
 func TestConfigCursorsClampOnReload(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.view = ViewConfig
@@ -339,7 +374,7 @@ func TestConfigCursorsClampOnReload(t *testing.T) {
 	}
 }
 
-// --- Task 6: section/entry lifecycle and guards ---
+// --- section/entry lifecycle and guards ---
 
 // setConfigFragment installs a fragment and brings the zones projection and
 // the config cursors in sync, mirroring what startup does.

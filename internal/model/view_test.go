@@ -61,6 +61,16 @@ func TestViewFooterAndReady(t *testing.T) {
 	}
 }
 
+// TestViewZonesHelpMentionsConfig pins that the zones-view help line names the
+// key that opens the Config view, so the view is discoverable.
+func TestViewZonesHelpMentionsConfig(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.width, m.height = 120, 30
+	if v := m.View(); !strings.Contains(v, "c config") {
+		t.Errorf("zones View help missing %q:\n%s", "c config", v)
+	}
+}
+
 func TestViewNarrowStacks(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.width, m.height = 40, 20

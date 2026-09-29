@@ -283,6 +283,8 @@ func (m RootModel) overlayBox(w int) string {
 	switch m.state {
 	case StateForm:
 		content = m.form.View()
+	case StateSectionForm:
+		content = m.sectionFormOverlay()
 	case StateConfirm:
 		content = m.confirmMessage()
 	default:
@@ -300,6 +302,18 @@ func (m RootModel) overlayBox(w int) string {
 		lines[i] = fit(lines[i], innerW)
 	}
 	return indent(th.box.Render(strings.Join(lines, "\n")), 2)
+}
+
+// sectionFormOverlay renders the specialized forward/stub form: a header named
+// after the edited kind over the form's fields. SectionForm.View already emits
+// its own title line, so that first line is dropped to avoid a duplicate
+// header (mirroring how overlayBox wraps RecordForm.View for StateForm).
+func (m RootModel) sectionFormOverlay() string {
+	body := m.secForm.View()
+	if i := strings.IndexByte(body, '\n'); i >= 0 {
+		body = body[i+1:]
+	}
+	return "edit " + m.secForm.kind + "\n" + body
 }
 
 func (m RootModel) confirmMessage() string {
@@ -334,6 +348,8 @@ func (m RootModel) helpText() string {
 	switch m.state {
 	case StateForm:
 		return "tab next · enter submit · esc cancel"
+	case StateSectionForm:
+		return "esc cancel · tab next · ctrl+s apply"
 	case StateConfirm:
 		return "y confirm · any other key cancels"
 	case StateForeign:
@@ -395,7 +411,7 @@ func (m RootModel) View() string {
 	overlay := ""
 	overlayH := 0
 	switch m.state {
-	case StateForm, StateConfirm:
+	case StateForm, StateSectionForm, StateConfirm:
 		overlay = m.overlayBox(w)
 		overlayH = lipgloss.Height(overlay) + 1 // plus the blank separator line
 	}

@@ -169,3 +169,37 @@ func TestForeignOrphansBucket(t *testing.T) {
 		t.Errorf("orphan RR not bucketed under %q: %+v", noZoneName, f.all)
 	}
 }
+
+// TestViewSectionFormOverlay pins that StateSectionForm renders the specialized
+// form box: the kind-derived header, a field label/value, and the help hint.
+func TestViewSectionFormOverlay(t *testing.T) {
+	for _, kind := range []string{"forward-zone", "stub-zone"} {
+		t.Run(kind, func(t *testing.T) {
+			f := domain.Fragment{Sections: []domain.Section{
+				{Kind: kind, Entries: []domain.Entry{
+					{Key: "name", Value: "test."},
+					{Key: addrKeyFor(kind), Value: "192.0.2.53"},
+				}},
+			}}
+			m := configModel(t, f)
+			m.width, m.height = 120, 30
+			m.cfgView.SecCursor = 0
+			m = asRoot(t, mustUpdate(t, m, key("E")))
+			if m.state != StateSectionForm {
+				t.Fatalf("state = %v, want StateSectionForm", m.state)
+			}
+
+			v := m.View()
+			for _, want := range []string{
+				"edit " + kind,
+				"Name",
+				"192.0.2.53",
+				"esc cancel · tab next · ctrl+s apply",
+			} {
+				if !strings.Contains(v, want) {
+					t.Errorf("section-form View missing %q:\n%s", want, v)
+				}
+			}
+		})
+	}
+}

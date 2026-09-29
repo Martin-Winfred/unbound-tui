@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -158,11 +159,17 @@ func (f SectionForm) Update(msg tea.Msg) (SectionForm, tea.Cmd) {
 }
 
 // submit soft-checks every field and, on success, emits a
-// SectionFormSubmitMsg. A failure sets f.err and leaves the form open:
-// addresses name the offending 1-based line, booleans must pass TypeBool, and
-// an empty boolean means the directive is absent.
+// SectionFormSubmitMsg. A failure sets f.err and leaves the form open: the name
+// is required (the explicit "." is how the root zone is targeted; an omitted
+// name would silently rebuild the section as the root zone), addresses name the
+// offending 1-based line, booleans must pass TypeBool, and an empty boolean
+// means the directive is absent.
 func (f SectionForm) submit() (SectionForm, tea.Cmd) {
 	name := strings.TrimSpace(f.inputs[f.nameIdx].Value())
+	if name == "" {
+		f.err = errors.New(`name is required — use "." for the root zone`)
+		return f, nil
+	}
 	if err := validate.ValidateValue(validate.TypeText, name); err != nil {
 		f.err = err
 		return f, nil
@@ -249,8 +256,9 @@ func (f SectionForm) View() string {
 // rebuildSection strips the section's managed keys (kind-dependent) and
 // appends the regenerated block in order name -> addresses -> booleans. Every
 // unmanaged entry keeps its relative order and position, so it ends up before
-// the appended managed block byte-identical. An empty name emits no name
-// entry; an empty boolean emits no boolean entry.
+// the appended managed block byte-identical. An empty name emits no name entry
+// (the form gate in submit rejects it, so this only matters to direct callers);
+// an empty boolean emits no boolean entry.
 //
 // Disabled is carried through so a specialize submit never silently re-enables
 // a disabled section: the regenerated name and booleans inherit the Disabled

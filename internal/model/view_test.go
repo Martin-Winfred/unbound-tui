@@ -114,6 +114,17 @@ func TestViewConfirmOverlaySectionAndEntry(t *testing.T) {
 	}
 }
 
+// TestViewForeignHelpMentionsUpstreams pins the discoverability hint for the
+// Foreign upstreams tab: the help line must name the `u` key.
+func TestViewForeignHelpMentionsUpstreams(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.width, m.height = 120, 30
+	m.state = StateForeign
+	if v := m.View(); !strings.Contains(v, "u upstreams") {
+		t.Errorf("Foreign View help missing %q:\n%s", "u upstreams", v)
+	}
+}
+
 func TestForeignFilterAndPaging(t *testing.T) {
 	var zones []domain.LocalZone
 	for i := 0; i < 20; i++ {

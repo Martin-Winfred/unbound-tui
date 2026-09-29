@@ -7,9 +7,8 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
-// validFragment mirrors the Task 4 serializer golden model: a top-level
-// include, a server section holding active and disabled entries, and a named
-// forward-zone.
+// validFragment is the serializer golden model: a top-level include, a server
+// section holding active and disabled entries, and a named forward-zone.
 func validFragment() domain.Fragment {
 	return domain.Fragment{Sections: []domain.Section{
 		{Kind: "", Entries: []domain.Entry{

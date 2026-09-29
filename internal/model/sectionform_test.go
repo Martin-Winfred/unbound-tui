@@ -487,6 +487,58 @@ func TestSectionFormStubSubmitUsesStubKeys(t *testing.T) {
 	}
 }
 
+// --- name is required ---
+
+// TestSectionFormRequiresName pins that the specialized form refuses a missing
+// name instead of silently omitting the name entry: an omitted name makes the
+// section identity the root zone ".", which is a legal-but-unintended retarget.
+// The explicit "." spelling stays the only way to target the root zone.
+func TestSectionFormRequiresName(t *testing.T) {
+	const wantMsg = `name is required — use "." for the root zone`
+	cases := []struct {
+		name    string
+		kind    string
+		input   string
+		wantErr bool
+	}{
+		{name: "forward-zone empty", kind: "forward-zone", input: "", wantErr: true},
+		{name: "forward-zone whitespace", kind: "forward-zone", input: "   ", wantErr: true},
+		{name: "forward-zone root is allowed", kind: "forward-zone", input: ".", wantErr: false},
+		{name: "stub-zone empty", kind: "stub-zone", input: "", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := domain.Fragment{Sections: []domain.Section{{Kind: tc.kind, Entries: []domain.Entry{
+				{Key: "name", Value: "test."},
+				{Key: addrKeyFor(tc.kind), Value: "192.0.2.1"},
+			}}}}
+			m := openSpecialized(t, configModel(t, f), 0)
+			m.secForm.inputs[m.secForm.nameIdx].SetValue(tc.input)
+
+			next, cmd := stepSpecialized(t, m, "ctrl+s")
+			if tc.wantErr {
+				if cmd != nil {
+					t.Fatal("empty name produced a submit command")
+				}
+				if next.secForm.err == nil || next.secForm.err.Error() != wantMsg {
+					t.Fatalf("err = %v, want %q", next.secForm.err, wantMsg)
+				}
+				if got := nameEntries(next.frag.Sections[0]); !reflect.DeepEqual(got, []string{"test."}) {
+					t.Errorf("rejected submit changed the section name: %v", got)
+				}
+				return
+			}
+			if cmd == nil {
+				t.Fatalf("submit produced no command; err = %v", next.secForm.err)
+			}
+			got := asRoot(t, mustUpdate(t, next, cmd().(SectionFormSubmitMsg)))
+			if names := nameEntries(got.frag.Sections[0]); !reflect.DeepEqual(names, []string{"."}) {
+				t.Errorf("section name = %v, want the root zone %q", names, ".")
+			}
+		})
+	}
+}
+
 // --- navigation ---
 
 func TestSectionFormKeyNavigation(t *testing.T) {

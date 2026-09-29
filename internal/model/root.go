@@ -147,6 +147,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ForeignLoadedMsg:
 		m.foreign = newForeignModel(msg.Zones, msg.RRs, msg.Err)
 		m.foreign.setUpstreams(msg.Upstreams, msg.UpErr)
+		// A successful fetch is fresher than the Init snapshot, so backfill the
+		// add-time conflict warning list. A read failure leaves the snapshot
+		// alone rather than blanking it.
+		if msg.UpErr == "" {
+			m.upstreams = msg.Upstreams
+		}
 		m.foreign.resize(m.width, m.bodyHeightFor(m.height))
 		return m, nil
 

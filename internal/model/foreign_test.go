@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -232,8 +233,8 @@ func TestRequestForeignLoadsUpstreams(t *testing.T) {
 		resolved = foreign
 	}
 
-	// The Init snapshot feeds add-time conflict warnings (Task 4), so it must
-	// be populated and stored on the root model too.
+	// The Init snapshot feeds add-time conflict warnings, so it must be
+	// populated and stored on the root model too.
 	loaded, ok := m.Init()().(ZonesLoadedMsg)
 	if !ok {
 		t.Fatalf("Init produced %T, want ZonesLoadedMsg", m.Init()())
@@ -267,4 +268,37 @@ func TestRequestForeignLoadsUpstreams(t *testing.T) {
 	if v := root.foreign.View(); !strings.Contains(v, "forward-zone test. · 2 entries · ") {
 		t.Errorf("upstream row missing from foreign view:\n%s", v)
 	}
+}
+
+// TestForeignLoadedMsgBackfillsUpstreamSnapshot pins the backflow from the
+// Foreign fetch into the add-time conflict snapshot: a successful fetch
+// refreshes m.upstreams with the fresher rows, while a read failure (UpErr)
+// leaves the previous snapshot untouched so the warning never goes blind.
+func TestForeignLoadedMsgBackfillsUpstreamSnapshot(t *testing.T) {
+	t.Run("success refreshes the snapshot", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m.upstreams = []UpstreamRow{{Kind: "forward-zone", Name: "stale.", Source: "old.conf"}}
+		fresh := []UpstreamRow{{Kind: "stub-zone", Name: "fresh.", Source: "new.conf"}}
+		m = asRoot(t, mustUpdate(t, m, ForeignLoadedMsg{
+			Zones:     []domain.LocalZone{{Name: "z.example.", Type: "static"}},
+			Upstreams: fresh,
+		}))
+		if !reflect.DeepEqual(m.upstreams, fresh) {
+			t.Errorf("m.upstreams = %+v, want the fresher fetch %+v", m.upstreams, fresh)
+		}
+	})
+
+	t.Run("error keeps the previous snapshot", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		prev := []UpstreamRow{{Kind: "forward-zone", Name: "stale.", Source: "old.conf"}}
+		m.upstreams = prev
+		m = asRoot(t, mustUpdate(t, m, ForeignLoadedMsg{
+			Err:       fmt.Errorf("list zones: boom"),
+			UpErr:     "read config: boom",
+			Upstreams: []UpstreamRow{{Kind: "stub-zone", Name: "fresh.", Source: "new.conf"}},
+		}))
+		if !reflect.DeepEqual(m.upstreams, prev) {
+			t.Errorf("m.upstreams = %+v, want the previous snapshot %+v", m.upstreams, prev)
+		}
+	})
 }

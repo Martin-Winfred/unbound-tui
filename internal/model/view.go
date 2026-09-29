@@ -353,7 +353,7 @@ func (m RootModel) helpText() string {
 	case StateConfirm:
 		return "y confirm · any other key cancels"
 	case StateForeign:
-		return "j/k move · tab pane · / filter · g/G top/bottom · ctrl+d/u page · esc back"
+		return "j/k move · u upstreams · tab pane · / filter · g/G top/bottom · ctrl+d/u page · esc back"
 	default:
 		if m.view == ViewConfig {
 			return "c local data · tab pane · j/k move · g/G top/bottom · ctrl+d/u page · w apply · f foreign · q quit"

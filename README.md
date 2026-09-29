@@ -1,84 +1,100 @@
 # unbound-tui
 
-A stateless terminal UI for managing a slice of [Unbound](https://nlnetlabs.nl/projects/unbound/about/) local data — zones and records — without a database and without hand-editing Unbound config.
+A stateless terminal UI for managing a slice of [Unbound](https://nlnetlabs.nl/projects/unbound/about/) configuration. It owns exactly one config fragment file and never edits the rest of your Unbound setup. You edit an in-memory model of that fragment, and on apply the fragment is validated, written atomically, and `unbound-control reload` makes the daemon match it. There is no database and no state between runs.
 
-The tool owns **one** Unbound config fragment and nothing else. It parses that file into a zone/record model, lets you edit the model in memory, and on `Apply` writes the fragment back atomically and runs `unbound-control reload`. Everything else in your Unbound configuration is read-only to the tool, so it can never touch entries it does not own.
+## Features
 
-## How it works
+- **Local data view (default).** The zone/record editor: add and delete zones, add/edit/delete records (type, value, TTL), change a zone's type, and enable/disable a zone or record without losing data.
+- **Config view (`c`).** A generic editor over the whole fragment: every section and entry, including `server:`, `remote-control:`, `forward-zone:`, `stub-zone:` and any directive the parser passed through verbatim. Add a section (`A`) or entry (`a`), edit an entry (`e`), delete (`d`/`D`), and enable/disable (`space`). Values are type-checked where the schema knows the directive (bool, int, port, address/CIDR, path, RR line, upstream host/address).
+- **Specialized forward/stub form (`E`).** For a selected `forward-zone`/`stub-zone`, a structured form for the name, the upstream addresses, and the `forward-tls-upstream`/`forward-first` (or `stub-prime`/`stub-first`) toggles. Unmanaged directives in the section are preserved verbatim.
+- **Foreign view (`f`).** Read-only visibility into what Unbound serves outside our fragment. The runtime tab lists foreign zones and records; `u` switches to a tab of foreign `forward-zone`/`stub-zone` sections read from the include graph. `/` filters either tab.
+- **Conflict detection.** The include graph is read recursively, so a directive declared both in our fragment and elsewhere is caught. Adding or editing a conflicting named section or singleton option warns immediately; `w` refuses to apply until you resolve it manually. See [docs/deploy.md § Conflicts and manual resolution](docs/deploy.md#6-conflicts-and-manual-resolution).
+- **Read-only include graph.** The tool reads the main config and its includes to show the full effective configuration and to warn about conflicts, but writes only its own fragment.
+- **Single validated write path.** Every value passes the whitelist validator before it can reach the fragment. Apply is validate → atomic write → `unbound-control reload`.
 
-- **The fragment file is the source of truth.** No SQLite, no migrations, no runtime diffing, no background state. Start the tool and it shows what is in its fragment; apply and the daemon matches it. The process keeps nothing between runs.
-- **Coexistence is structural.** The tool only ever rewrites its own fragment file. Zones and records that live in the main config or other includes are shown in a read-only *Foreign* view (`f`), never modified.
-- **Enable/disable without losing data.** Disabling a zone or record keeps it in the file as commented lines, so it stays editable but is no longer served.
-- **Injection defense.** Every value passes a whitelist validator before it can reach the fragment file, which is the only write path.
+## Install
 
-## Status
+Prebuilt Linux binaries (amd64, arm64, armv7) are published on the [Releases page](https://github.com/Martin-Winfred/unbound-tui/releases) by GoReleaser as `unbound-tui_<version>_linux_<arch>.tar.gz`, with a `checksums.txt`. Download, extract, and install the binary:
 
-**Early access.** The core is implemented and tested:
+```sh
+tar xzf unbound-tui_*_linux_amd64.tar.gz
+sudo install -m 0755 unbound-tui /usr/local/bin/unbound-tui
+```
 
-- Manage local data: add and delete zones, add/edit/delete records (TTL, type, value), change a zone's type, and enable/disable a zone or record without losing it.
-- Stateless and file-backed: the tool owns a single fragment and rewrites it atomically on apply; no database, no state between runs.
-- Safe coexistence: only its own fragment is written. Other Unbound configuration is read-only, and a read-only *Foreign* view (with `/` filter) shows what Unbound serves outside the fragment.
-- `w` validates the model, writes the fragment atomically and runs `unbound-control reload`.
+Or build from source (Go 1.25+):
 
-Verified with unit tests across every package (`go test ./...`) and end-to-end on **Debian 13 with Unbound 1.26** (create/edit/apply/reload, foreign view, enable/disable).
+```sh
+go build -o unbound-tui ./cmd/unbound-tui
+```
 
-Not yet supported:
+## Quick start
 
-- Forwarding / recursion configuration (`forward-zone`, `stub-zone`, `forward-addr`, DoT/TLS bundle).
-- Unbound's non-data settings (interfaces, `access-control`, `root-hints`, ...).
-- Record types beyond A, AAAA, CNAME, PTR, MX, TXT, SRV and NS.
-
-## Usage
+On Debian/Ubuntu, Unbound loads `/etc/unbound/unbound.conf.d/*.conf` via `include-toplevel`, so the default fragment is included with no extra setup:
 
 ```sh
 sudo unbound-tui
 ```
 
-- The zones and records you see are exactly what is in the fragment file; the process holds no other state.
-- `tab` switches between the zones and records panes. Add or edit entries (`a`, `r`, `e`, `t`), delete with confirmation (`d`/`D`), and enable/disable with `space`.
-- Press `w` to **apply**: the model is validated, the fragment is written atomically, and `unbound-control reload` makes the daemon match it. Until you apply, nothing is persisted.
-- Press `f` for the read-only Foreign view — what Unbound serves that does not come from this tool.
-- `q` quits and warns if there are unsaved changes.
-
-## Requirements
-
-- Unbound with `remote-control` enabled (so `unbound-control` works)
-- Go 1.21+ (build only — the binary is self-contained)
-
-## Build and run
+1. Press `a` to add a zone (for example `example.com`), then `tab` to the records pane and `r` to add a record under it.
+2. Press `w` to apply: the fragment is written atomically and `unbound-control reload` runs. Nothing is persisted before that.
+3. Verify from another shell:
 
 ```sh
-go build -o unbound-tui ./cmd/unbound-tui
-
-# On Debian/Ubuntu the fragment lands in the auto-included drop-in directory
-# (/etc/unbound/unbound.conf.d/*.conf). On other layouts add this line to the
-# main config (the tool only reads it, to warn):
-#   include: /etc/unbound/unbound.conf.d/unbound-tui.conf
-sudo ./unbound-tui
+sudo unbound-control list_local_zones
+sudo unbound-control list_local_data
 ```
+
+On other layouts, add `include: /etc/unbound/unbound.conf.d/unbound-tui.conf` to the main config. The tool warns on start when the fragment is not included (literal path or a matching glob); it never writes the main config.
+
+## Ownership boundary
+
+- The tool owns **one** fragment file (default `/etc/unbound/unbound.conf.d/unbound-tui.conf`) and rewrites it whole from validated input. It never edits the main config or any other include.
+- Everything else in the include graph is read-only: it is used to render the Foreign view and to detect conflicts, never to write.
+- When a conflict is detected, the fix is always yours: edit the named foreign file manually. Apply is refused (not silently reordered) until then. Details and examples: [docs/deploy.md § Conflicts and manual resolution](docs/deploy.md#6-conflicts-and-manual-resolution).
+
+## Keys
+
+Local data view and Config view:
+
+| Key | Local data view | Config view |
+|-----|-----------------|-------------|
+| `j`/`k`, `↓`/`↑` | move the cursor | move the cursor |
+| `g`/`G` | jump to top/bottom | jump to top/bottom |
+| `ctrl+d`/`ctrl+u` | page down/up | page down/up |
+| `tab` | switch the zones/records panes | switch the sections/entries panes |
+| `a` | add a zone | add an entry to the focused section |
+| `A` | — | add a section |
+| `r` | add a record to the focused zone | — |
+| `e` | edit the focused record's TTL | edit the focused entry |
+| `E` | — | specialized form for the selected forward-zone/stub-zone |
+| `t` | change the focused zone's type | — |
+| `d` | delete the focused record | delete the focused entry |
+| `D` | delete the focused zone and its records | delete the focused section (only when it holds no `local-*` entries) |
+| `space` | enable/disable the focused zone or record | enable/disable the focused entry (section pane: every entry of the section) |
+| `c` | switch to the Config view | switch to the Local data view |
+| `f` | open the read-only Foreign view | open the read-only Foreign view |
+| `w` | apply | apply |
+| `q` / `ctrl+c` | quit (confirms unsaved changes) | quit (confirms unsaved changes) |
+
+Foreign view (opened with `f`):
+
+| Key | Action |
+|-----|--------|
+| `j`/`k`, `↓`/`↑` | move the cursor |
+| `tab`, `h`/`l`, `←`/`→` | switch between the zones and RRs panes |
+| `u` | toggle between runtime zones/RRs and foreign forward/stub upstreams |
+| `/` | filter (zone name, RR, or upstream kind/name/source); `esc` clears |
+| `g`/`G` | jump to top/bottom |
+| `ctrl+d`/`ctrl+u` | page down/up |
+| `esc`, `q`, `f` | back |
 
 ## Flags
 
 | Flag | Default | Purpose |
 |------|---------|---------|
-| `-config` | `/etc/unbound/unbound.conf` | Path to the Unbound config (used for the include check and `unbound-control`) |
+| `-config` | `/etc/unbound/unbound.conf` | Path to the Unbound main config (used for the include check and `unbound-control`); must exist |
 | `-fragment` | `/etc/unbound/unbound.conf.d/unbound-tui.conf` | Fragment file the tool owns |
-
-## Keys
-
-| Key | Action |
-|-----|--------|
-| `j`/`k`, `↓`/`↑` | Move the focused cursor |
-| `tab` | Switch focus between the zones and records panes |
-| `a` | Add a zone |
-| `r` | Add a record to the focused zone |
-| `e` | Edit the focused record's TTL |
-| `t` | Change the focused zone's type |
-| `d` / `D` | Delete the focused record / zone (confirmation) |
-| `space` | Enable/disable the focused entry |
-| `w` | Apply: write the fragment and reload Unbound |
-| `f` | Toggle the read-only Foreign view |
-| `q` / `ctrl+c` | Quit (asks first when there are unsaved changes) |
+| `-version` | | Print the version and exit |
 
 ## Fragment layout
 
@@ -95,28 +111,26 @@ local-data: "www.example.com. 300 IN A 192.0.2.2"
 # local-data: "host.old.example. 60 IN A 192.0.2.9"
 ```
 
-## Roadmap
+The fragment declares its own `server:` section, so `local-zone`/`local-data` are valid wherever the main config includes it. `include:` is textual inlining, so the section is required regardless of where the include sits.
 
-Rough, in no particular order:
+## Requirements
 
-- Forwarding / recursion configuration (root and named `forward-zone`, optional DoT; `stub-zone`).
-- Read-only view of existing forwarders (`unbound-control list_forwards` / `list_stubs`).
-- More record types and value formats.
-- Packaging (deb / ARM) and a ready-to-run systemd unit.
-- Importing existing `local-zone` / `local-data` into the managed fragment.
-
-See [ROADMAP.md](ROADMAP.md) for the detailed, milestone-based plan.
-
-## Feedback
-
-This is early access - bug reports, feature requests and ideas are welcome. Please open an issue:
-
-<https://github.com/Martin-Winfred/unbound-tui/issues>
+- Unbound with `remote-control` enabled, so `unbound-control` works.
+- Go 1.25+ (build only; release binaries are self-contained).
 
 ## Development
 
 ```sh
-go test ./...     # all tests
-go vet ./...      # static analysis
-gofmt -l .        # formatting check
+go build -o unbound-tui ./cmd/unbound-tui   # build
+go test ./...                               # all tests
+go vet ./...                                # static checks
+gofmt -l .                                  # list formatting diffs
 ```
+
+See [ROADMAP.md](ROADMAP.md) for the milestone plan and [docs/deploy.md](docs/deploy.md) for deployment.
+
+## Feedback
+
+Bug reports, feature requests and ideas are welcome. Please open an issue:
+
+<https://github.com/Martin-Winfred/unbound-tui/issues>

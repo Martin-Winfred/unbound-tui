@@ -1,15 +1,27 @@
 # Deployment Guide
 
 This guide covers deploying `unbound-tui`, a stateless file-backed editor for a
-slice of Unbound local data.
+slice of Unbound configuration — local zones/records plus a generic
+section/entry editor over its own fragment.
 
 ## 1. Requirements
 
 - Unbound with `remote-control` enabled, so `unbound-control reload` works.
-- Go 1.21+ on the build machine only; the binary is self-contained.
+- Go 1.25+ on the build machine only; release binaries are self-contained.
 - No database and no system SQLite.
 
 ## 2. Install
+
+Prebuilt Linux binaries (amd64, arm64, armv7) are published on the
+[Releases page](https://github.com/Martin-Winfred/unbound-tui/releases) by
+GoReleaser. Download the archive for your architecture and install it:
+
+```sh
+tar xzf unbound-tui_*_linux_amd64.tar.gz
+sudo install -m 0755 unbound-tui /usr/local/bin/unbound-tui
+```
+
+Or build from source:
 
 ```sh
 go build -o unbound-tui ./cmd/unbound-tui
@@ -46,8 +58,8 @@ sudo unbound-tui
 
 On start the tool:
 
-1. Parses its fragment into an in-memory zone/record model (a missing file is
-   treated as empty).
+1. Parses its fragment into an in-memory section/entry model and projects the
+   zone/record view from it (a missing file is treated as empty).
 2. Probes `unbound-control` (a warning, not fatal) and checks the include.
 
 Edits are held in memory. Press `w` to **apply**: the model is validated, the
@@ -58,9 +70,16 @@ changes asks for confirmation.
 ## 5. What the tool will and will not touch
 
 - **Owns:** the fragment file only. It is rewritten whole, from validated input.
-- **Read-only:** everything else. The `f` view lists what Unbound currently
+- **Read-only:** everything else. The `f` view shows what Unbound currently
   serves that does not come from our fragment (zones and records from the main
-  config or other includes); it is informational and never modified.
+  config or other includes), and its `u` tab lists foreign `forward-zone` /
+  `stub-zone` sections read from the include graph. Both are informational and
+  never modified.
+
+The generic **Config** view edits every section and entry *of our fragment* —
+including `server:` / `remote-control:` options and `forward-zone` / `stub-zone`
+sections — while the `local-zone` / `local-data` entries stay owned by the
+**Local data** view. It never reaches into foreign files.
 
 Because the tool only rewrites its own file and reloads, it cannot delete or
 alter entries it does not own.
@@ -105,8 +124,9 @@ its own fragment; the foreign edit is always yours to make.
 
 ## 7. Enabling and disabling
 
-Disabling a zone or record does not delete it. The entry is moved to a
-commented block at the end of the fragment:
+Disabling an entry does not delete it. The entry is moved to a commented block
+at the end of the fragment. This works for any entry — a zone or record in the
+Local data view, or any section/entry in the Config view:
 
 ```ini
 # unbound-tui:disabled

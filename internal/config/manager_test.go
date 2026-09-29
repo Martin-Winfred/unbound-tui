@@ -122,3 +122,53 @@ func TestCheckIncludeGlob(t *testing.T) {
 		t.Errorf("CheckInclude with a matching glob = %v, want nil", err)
 	}
 }
+
+// TestWriteFragmentValidatesBeforeDisk pins the gate ordering: an invalid
+// fragment must be rejected before MkdirAll runs, so it neither creates the
+// parent directory nor the file. The fragment path lives in a not-yet-existing
+// subdirectory so an accidentally-created directory is observable.
+func TestWriteFragmentValidatesBeforeDisk(t *testing.T) {
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "unbound.conf")
+	if err := os.WriteFile(conf, []byte("server:\n"), 0644); err != nil {
+		t.Fatalf("write conf: %v", err)
+	}
+	m, err := NewManager(conf)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sub := filepath.Join(dir, "nested")
+	frag := filepath.Join(sub, "frag.conf")
+	m.SetFragmentPath(frag)
+
+	invalid := domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "foo bar", Value: "x"}}},
+	}}
+	err = m.WriteFragment(invalid)
+	if err == nil {
+		t.Fatalf("WriteFragment(invalid) = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "write fragment") || !strings.Contains(err.Error(), "foo bar") {
+		t.Errorf("WriteFragment(invalid) = %v, want wrapped validation error naming the key", err)
+	}
+	if _, statErr := os.Stat(frag); !os.IsNotExist(statErr) {
+		t.Errorf("invalid fragment must not create the file (stat err = %v)", statErr)
+	}
+	if _, statErr := os.Stat(sub); !os.IsNotExist(statErr) {
+		t.Errorf("invalid fragment must not create the parent dir (stat err = %v)", statErr)
+	}
+
+	// Positive control: a valid fragment does create the directory and file.
+	valid := domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "local-zone", Value: `"example.com" static`}}},
+	}}
+	if err := m.WriteFragment(valid); err != nil {
+		t.Fatalf("WriteFragment(valid) = %v", err)
+	}
+	if _, statErr := os.Stat(sub); statErr != nil {
+		t.Errorf("valid fragment must create the parent dir: %v", statErr)
+	}
+	if _, statErr := os.Stat(frag); statErr != nil {
+		t.Errorf("valid fragment must create the file: %v", statErr)
+	}
+}

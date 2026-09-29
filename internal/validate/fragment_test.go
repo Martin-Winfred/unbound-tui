@@ -68,17 +68,22 @@ func TestValidateFragment(t *testing.T) {
 		{
 			name:    "value nul rejected",
 			f:       fragOf(domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "x", Value: "a\x00b"}}}),
-			wantErr: `invalid value`,
+			wantErr: `section server: entry 1: invalid value`,
 		},
 		{
 			name:    "value tab rejected",
 			f:       fragOf(domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "x", Value: "a\tb"}}}),
-			wantErr: `invalid value`,
+			wantErr: `section server: entry 1: invalid value`,
 		},
 		{
 			name:    "value del rejected",
 			f:       fragOf(domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "x", Value: "a\x7fb"}}}),
-			wantErr: `invalid value`,
+			wantErr: `section server: entry 1: invalid value`,
+		},
+		{
+			name:    "disabled entry still validated",
+			f:       fragOf(domain.Section{Kind: "server", Entries: []domain.Entry{{Key: "x", Value: "a\tb", Disabled: true}}}),
+			wantErr: `section server: entry 1: invalid value`,
 		},
 		{
 			name: "value quotes spaces hash allowed",

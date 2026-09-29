@@ -533,3 +533,28 @@ func TestConfigFormEditEntryScalarWarning(t *testing.T) {
 		t.Errorf("notice = %q, want %q", m.notice, scalarWarnFixture)
 	}
 }
+
+// TestConfigFormAddEntryScalarWarningDeadForeign is the false-alarm
+// regression: a foreign scalar that is commented out (disabled) must not
+// raise the add-time warning, because apply-time FindScalarConflicts ignores
+// dead entries on both sides.
+func TestConfigFormAddEntryScalarWarningDeadForeign(t *testing.T) {
+	f := domain.Fragment{Sections: []domain.Section{{Kind: "server"}}}
+	m := configModel(t, f)
+	m.cfgView = ConfigViewModel{SecCursor: 0, SecFocused: true}
+	eff := config.Effective{Sections: []config.EffectiveSection{
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{
+			{Key: "verbosity", Value: "1", Disabled: true},
+		}}, Source: "/etc/unbound/conf.d/zz.conf"},
+	}}
+	m.scalarIdx = buildScalarIndex(eff, m.cfg.FragmentPath())
+
+	m = submitEntryToServer(t, m, "verbosity", "3")
+
+	if m.notice != "" {
+		t.Errorf("notice = %q, want empty for a commented-out foreign scalar", m.notice)
+	}
+	if !hasEntry(m.frag, "verbosity", "3") {
+		t.Error("verbosity entry not created")
+	}
+}

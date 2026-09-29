@@ -367,6 +367,58 @@ func TestBuildScalarIndexExcludesSymlinkedOwn(t *testing.T) {
 	}
 }
 
+// TestBuildScalarIndexSkipsDeadEntries pins the active-entry rule: a foreign
+// section contributes a {kind,key} source only when it has an active entry of
+// that key, mirroring FindScalarConflicts. A key whose foreign entries are all
+// disabled (commented out) must not raise an add-time warning.
+func TestBuildScalarIndexSkipsDeadEntries(t *testing.T) {
+	own := "/etc/unbound/unbound.conf.d/unbound-tui.conf"
+	const src = "/etc/unbound/conf.d/zz.conf"
+	cases := []struct {
+		name  string
+		entry domain.Entry
+		want  map[[2]string][]string
+	}{
+		{
+			name:  "all key entries disabled contributes nothing",
+			entry: domain.Entry{Key: "verbosity", Value: "1", Disabled: true},
+			want:  map[[2]string][]string{},
+		},
+		{
+			name:  "active key entry contributes",
+			entry: domain.Entry{Key: "verbosity", Value: "5"},
+			want:  map[[2]string][]string{{"server", "verbosity"}: {src}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eff := config.Effective{Sections: []config.EffectiveSection{
+				{Section: domain.Section{Kind: "server", Entries: []domain.Entry{tc.entry}}, Source: src},
+			}}
+			if got := buildScalarIndex(eff, own); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("buildScalarIndex = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildScalarIndexSkipsDeadEntriesMixed pins the per-key rule: a disabled
+// entry does not suppress a sibling active entry of the same key.
+func TestBuildScalarIndexSkipsDeadEntriesMixed(t *testing.T) {
+	own := "/etc/unbound/unbound.conf.d/unbound-tui.conf"
+	const src = "/etc/unbound/conf.d/zz.conf"
+	eff := config.Effective{Sections: []config.EffectiveSection{
+		{Section: domain.Section{Kind: "server", Entries: []domain.Entry{
+			{Key: "verbosity", Value: "1", Disabled: true},
+			{Key: "verbosity", Value: "5"},
+		}}, Source: src},
+	}}
+	want := map[[2]string][]string{{"server", "verbosity"}: {src}}
+	if got := buildScalarIndex(eff, own); !reflect.DeepEqual(got, want) {
+		t.Errorf("buildScalarIndex = %+v, want %+v", got, want)
+	}
+}
+
 // TestForeignLoadedMsgBackfillsScalarIndex pins the backflow from the Foreign
 // fetch into the add-time scalar snapshot: a successful fetch refreshes
 // m.scalarIdx with the fresher index, while a read failure (UpErr) leaves the

@@ -127,11 +127,14 @@ func buildUpstreamRows(eff config.Effective, ownPath string) []UpstreamRow {
 }
 
 // buildScalarIndex maps each singleton option ({kind,key}) that a foreign
-// server/remote-control section in the effective include graph declares to the
-// files that declare it, in effective order, with each source listed once.
-// ownPath is normalized the same way ReadEffective normalizes every Source, so
-// a fragment reached through a symlink is still recognized as ours. It is the
-// add-time warning snapshot: a miss means no warning.
+// server/remote-control section in the effective include graph actively sets
+// to the files that declare it, in effective order, with each source listed
+// once. Only active entries participate, on the foreign side too, mirroring
+// FindScalarConflicts: a commented-out scalar cannot clash, so it must not
+// raise the add-time warning either. ownPath is normalized the same way
+// ReadEffective normalizes every Source, so a fragment reached through a
+// symlink is still recognized as ours. It is the add-time warning snapshot: a
+// miss means no warning.
 func buildScalarIndex(eff config.Effective, ownPath string) map[[2]string][]string {
 	own := normalizeSourcePath(ownPath)
 	out := make(map[[2]string][]string)
@@ -143,7 +146,7 @@ func buildScalarIndex(eff config.Effective, ownPath string) map[[2]string][]stri
 			continue
 		}
 		for _, e := range s.Entries {
-			if !config.ScalarKeys[e.Key] {
+			if e.Disabled || !config.ScalarKeys[e.Key] {
 				continue
 			}
 			pair := [2]string{s.Kind, e.Key}

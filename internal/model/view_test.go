@@ -85,6 +85,25 @@ func TestViewConfirmOverlay(t *testing.T) {
 	}
 }
 
+func TestViewConfirmOverlaySectionAndEntry(t *testing.T) {
+	cases := []struct {
+		kind, want string
+	}{
+		{"section", "Delete this section and all its entries?"},
+		{"entry", "Delete this entry?"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			m, _ := newTestModel(t)
+			m.state = StateConfirm
+			m.confirmKind = tc.kind
+			if v := m.View(); !strings.Contains(v, tc.want) {
+				t.Errorf("confirm overlay missing %q:\n%s", tc.want, v)
+			}
+		})
+	}
+}
+
 func TestForeignFilterAndPaging(t *testing.T) {
 	var zones []domain.LocalZone
 	for i := 0; i < 20; i++ {

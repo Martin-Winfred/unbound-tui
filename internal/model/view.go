@@ -320,6 +320,10 @@ func (m RootModel) confirmMessage() string {
 				return fmt.Sprintf("Delete record %s %s %s?", name, r.RType, r.Value)
 			}
 		}
+	case "section":
+		return "Delete this section and all its entries?"
+	case "entry":
+		return "Delete this entry?"
 	case "quit":
 		return "Unsaved changes - quit anyway?"
 	}

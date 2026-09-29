@@ -49,6 +49,7 @@ type RootModel struct {
 
 	form    RecordForm
 	cfgForm configFormCtx // target of the active Config-view form
+	secForm SectionForm   // active specialized forward/stub form
 
 	// delete/quit confirmation context; kinds: "zone", "record",
 	// "section", "entry", "quit". For "entry", confirmZone holds the
@@ -104,6 +105,10 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.form, cmd = m.updateForm(msg)
 			return m, cmd
+		case StateSectionForm:
+			var cmd tea.Cmd
+			m.secForm, cmd = m.secForm.Update(msg)
+			return m, cmd
 		case StateForeign:
 			var cmd tea.Cmd
 			m.foreign, cmd = m.foreign.Update(msg)
@@ -147,6 +152,7 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case FormCancelMsg:
 		m.form = RecordForm{}
+		m.secForm = SectionForm{}
 		m.state = StateReady
 		return m, nil
 
@@ -155,6 +161,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConfigFormSubmitMsg:
 		return m.applyConfigForm(msg)
+
+	case SectionFormSubmitMsg:
+		return m.applySectionForm(msg)
 
 	case ForeignCloseMsg:
 		m.state = StateReady
@@ -235,6 +244,8 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfgToggleDisabled()
 		case actionEditTTL:
 			m.cfgEditEntry()
+		case actionSpecializeSection:
+			m.openSectionForm()
 		}
 		return m, nil
 	}
@@ -308,6 +319,21 @@ func (m *RootModel) switchView() {
 	// A Local-view mutation can shift the section layout (regenLocal inserts
 	// a server section at index 0), so re-clamp before the Config panes render.
 	m.clampCfgCursors()
+}
+
+// openSectionForm is the `E` handler: it opens the specialized form when the
+// selected section is a forward-zone/stub-zone, and otherwise only warns.
+func (m *RootModel) openSectionForm() {
+	s, ok := m.focusedSection()
+	if !ok {
+		return
+	}
+	if !isSpecializedKind(s.Kind) {
+		m.notice = "E works on forward-zone and stub-zone sections"
+		return
+	}
+	m.secForm = newSectionForm(m.frag, m.cfgView.SecCursor)
+	m.state = StateSectionForm
 }
 
 func (m RootModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

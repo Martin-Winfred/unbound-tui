@@ -10,6 +10,7 @@ package model
 //	A                  Config view: add a new section
 //	r                  add a record to the focused zone
 //	e                  edit the focused record's TTL (Config view: edit the focused entry)
+//	E                  Config view: specialized form for the selected forward-zone/stub-zone
 //	t                  change the focused zone's type
 //	d                  delete the focused record (confirmation)
 //	D                  delete the focused zone and its records (confirmation)
@@ -32,6 +33,7 @@ var keyMap = map[string]string{
 	"A":      actionAddSection,
 	"r":      actionAddRecord,
 	"e":      actionEditTTL,
+	"E":      actionSpecializeSection,
 	"t":      actionSetType,
 	"d":      actionDeleteRecord,
 	"D":      actionDeleteZone,
@@ -44,23 +46,24 @@ var keyMap = map[string]string{
 }
 
 const (
-	actionUp             = "up"
-	actionDown           = "down"
-	actionTop            = "top"
-	actionBottom         = "bottom"
-	actionPageDown       = "page-down"
-	actionPageUp         = "page-up"
-	actionTogglePane     = "toggle-pane"
-	actionAddZone        = "add-zone"
-	actionAddSection     = "add-section"
-	actionAddRecord      = "add-record"
-	actionEditTTL        = "edit-ttl"
-	actionSetType        = "set-zone-type"
-	actionDeleteRecord   = "delete-record"
-	actionDeleteZone     = "delete-zone"
-	actionToggleDisabled = "toggle-disabled"
-	actionApply          = "apply"
-	actionSwitchView     = "switch-view"
-	actionForeign        = "foreign"
-	actionQuit           = "quit"
+	actionUp                = "up"
+	actionDown              = "down"
+	actionTop               = "top"
+	actionBottom            = "bottom"
+	actionPageDown          = "page-down"
+	actionPageUp            = "page-up"
+	actionTogglePane        = "toggle-pane"
+	actionAddZone           = "add-zone"
+	actionAddSection        = "add-section"
+	actionAddRecord         = "add-record"
+	actionEditTTL           = "edit-ttl"
+	actionSpecializeSection = "specialize-section"
+	actionSetType           = "set-zone-type"
+	actionDeleteRecord      = "delete-record"
+	actionDeleteZone        = "delete-zone"
+	actionToggleDisabled    = "toggle-disabled"
+	actionApply             = "apply"
+	actionSwitchView        = "switch-view"
+	actionForeign           = "foreign"
+	actionQuit              = "quit"
 )

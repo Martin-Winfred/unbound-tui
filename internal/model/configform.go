@@ -306,5 +306,12 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 
 	m.refreshZones()
 	m.dirty = true
+	// A named forward-zone/stub-zone submission chains straight into the
+	// specialized form on the section just created. A projection failure
+	// (StateError) keeps its loud error instead of opening the form.
+	if msg.Mode == FormAddSection && isSpecializedKind(msg.Kind) && m.state != StateError {
+		m.secForm = newSectionForm(m.frag, len(m.frag.Sections)-1)
+		m.state = StateSectionForm
+	}
 	return m, nil
 }

@@ -12,6 +12,10 @@ const (
 	StateApplying
 	StateConfirm
 	StateError
+	// StateSectionForm is the specialized forward-zone/stub-zone form. It
+	// is a distinct state from StateForm because it owns its own model and
+	// submit message (SectionFormSubmitMsg).
+	StateSectionForm
 )
 
 // ZonesLoadedMsg carries the generic fragment read from disk at startup. The

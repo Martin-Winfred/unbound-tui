@@ -120,6 +120,7 @@ func TestValidateValue(t *testing.T) {
 		{"upstream port zero", TypeUpstream, "192.0.2.53@0", "invalid port"},
 		{"upstream port too big", TypeUpstream, "192.0.2.53@70000", "invalid port"},
 		{"upstream port space", TypeUpstream, "192.0.2.53@ 853", "invalid port"},
+		{"upstream port names address", TypeUpstream, "192.0.2.53@0", `in address "192.0.2.53@0"`},
 		{"upstream empty auth", TypeUpstream, "192.0.2.53#", "invalid auth"},
 		{"upstream auth whitespace", TypeUpstream, "192.0.2.53#au thor", "invalid auth"},
 		{"upstream not an ip", TypeUpstream, "not a host", "invalid address"},
@@ -132,6 +133,7 @@ func TestValidateValue(t *testing.T) {
 		{"host empty label", TypeHost, "dns..example", "invalid host"},
 		{"host port zero", TypeHost, "dns.example@0", "invalid port"},
 		{"host port space", TypeHost, "dns.example@ 853", "invalid port"},
+		{"host port names host", TypeHost, "dns.example@0", `in host "dns.example@0"`},
 		{"host leading hyphen", TypeHost, "-bad.example", "invalid host"},
 
 		// access-control: "<CIDR> <action>"
@@ -146,7 +148,9 @@ func TestValidateValue(t *testing.T) {
 		{"access-control always_nxdomain", TypeAccessCtrl, "192.0.2.0/24 always_nxdomain", ""},
 		{"access-control host bits", TypeAccessCtrl, "192.0.2.1/24 allow", "host bits"},
 		{"access-control bad cidr", TypeAccessCtrl, "bad/24 allow", "invalid CIDR"},
+		{"access-control bad cidr names directive", TypeAccessCtrl, "bad/24 allow", "access-control: invalid CIDR"},
 		{"access-control bad action", TypeAccessCtrl, "192.0.2.0/24 maybe", "invalid action"},
+		{"access-control bad action names directive", TypeAccessCtrl, "192.0.2.0/24 maybe", "access-control: invalid action"},
 		{"access-control missing action", TypeAccessCtrl, "192.0.2.0/24", `expected "<CIDR> <action>"`},
 		{"access-control extra token", TypeAccessCtrl, "192.0.2.0/24 allow extra", `expected "<CIDR> <action>"`},
 		{"access-control empty", TypeAccessCtrl, "", `expected "<CIDR> <action>"`},

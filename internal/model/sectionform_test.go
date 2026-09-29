@@ -132,7 +132,7 @@ func TestAddSectionChainsIntoSpecializedForm(t *testing.T) {
 	for _, kind := range []string{"forward-zone", "stub-zone"} {
 		t.Run(kind, func(t *testing.T) {
 			m := configModel(t, domain.Fragment{})
-			m.newSectionForm()
+			m.openAddSectionForm()
 			m.form.inputs[0].SetValue(kind)
 			m.form.inputs[1].SetValue("test.")
 
@@ -384,7 +384,7 @@ func TestSectionFormAddrLineValidation(t *testing.T) {
 func TestSectionFormAddTimeWarning(t *testing.T) {
 	t.Run("live match warns but proceeds", func(t *testing.T) {
 		m := configModel(t, domain.Fragment{})
-		m.newSectionForm()
+		m.openAddSectionForm()
 		m.form.inputs[0].SetValue("forward-zone")
 		m.form.inputs[1].SetValue("test.")
 		next, cmd := m.Update(key("ctrl+s"))
@@ -458,7 +458,7 @@ func TestSectionFormEscCancels(t *testing.T) {
 
 func TestSectionFormStubSubmitUsesStubKeys(t *testing.T) {
 	m := configModel(t, domain.Fragment{})
-	m.newSectionForm()
+	m.openAddSectionForm()
 	m.form.inputs[0].SetValue("stub-zone")
 	m.form.inputs[1].SetValue("stub.example")
 	next, cmd := m.Update(key("ctrl+s"))
@@ -559,5 +559,29 @@ func TestSectionFormKeyNavigation(t *testing.T) {
 	}
 	if _, ok := cmd().(SectionFormSubmitMsg); !ok {
 		t.Fatalf("enter produced %T, want SectionFormSubmitMsg", cmd())
+	}
+}
+
+// TestApplySectionFormKeepsStateError pins the guard mirrored from the A-chain:
+// a late specialized submission must not clobber a loud projection error. The
+// model stays in StateError and the fragment is untouched.
+func TestApplySectionFormKeepsStateError(t *testing.T) {
+	m := configModel(t, forwardSection("192.0.2.53"))
+	m.state = StateError
+	before := m.frag
+	msg := SectionFormSubmitMsg{
+		Kind: "forward-zone", SecIndex: 0, Name: "changed.", Addrs: []string{"192.0.2.99"},
+	}
+
+	next, cmd := m.applySectionForm(msg)
+	got := asRoot(t, next)
+	if cmd != nil {
+		t.Errorf("applySectionForm produced a command, want nil on StateError")
+	}
+	if got.state != StateError {
+		t.Errorf("state = %v, want StateError preserved", got.state)
+	}
+	if !reflect.DeepEqual(got.frag, before) {
+		t.Errorf("fragment changed under StateError:\n got %+v\nwant %+v", got.frag, before)
 	}
 }

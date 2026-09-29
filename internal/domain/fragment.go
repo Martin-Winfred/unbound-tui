@@ -1,8 +1,9 @@
 package domain
 
 // Entry is one directive line inside a fragment section. Key is the directive
-// name (for example "local-zone" or "forward-addr"); Value keeps the raw text
-// after "key:" byte-for-byte, quotes included.
+// name (for example "local-zone" or "forward-addr"); Value holds the text
+// after "key:" with surrounding whitespace trimmed, while the inner text
+// (quotes and internal spacing) is preserved byte-for-byte.
 type Entry struct {
 	Key      string
 	Value    string

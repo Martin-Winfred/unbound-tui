@@ -253,7 +253,7 @@ func (m RootModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case actionTogglePane:
 			m.cfgView.SecFocused = !m.cfgView.SecFocused
 		case actionAddSection:
-			m.newSectionForm()
+			m.openAddSectionForm()
 		case actionAddZone:
 			m.newEntryForm(m.cfgView.SecCursor)
 		case actionDeleteRecord:
@@ -491,8 +491,7 @@ func (m RootModel) apply() tea.Cmd {
 				lines = append(lines, fmt.Sprintf("%s %q already exists in %s", c.Kind, c.Name, c.Source))
 			}
 			for _, c := range scalars {
-				lines = append(lines, fmt.Sprintf("%s: %s already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)",
-					c.Kind, c.Key, c.Source))
+				lines = append(lines, fmt.Sprintf(scalarConflictLineFmt, c.Kind, c.Key, c.Source))
 			}
 			return ErrorMsg{fmt.Errorf("cannot apply, conflicts with the include graph: %s", strings.Join(lines, "; "))}
 		}

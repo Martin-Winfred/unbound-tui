@@ -135,7 +135,7 @@ func TestForeignModelUpstreamsTab(t *testing.T) {
 	if !strings.Contains(v, "forward-zone test. · 2 entries · fwd.conf") {
 		t.Errorf("upstream row not rendered:\n%s", v)
 	}
-	if !strings.Contains(v, "stub-zone dead. · 1 entries · stub.conf ⛔") {
+	if !strings.Contains(v, "stub-zone dead. · 1 entry · stub.conf ⛔") {
 		t.Errorf("dead upstream row missing ⛔:\n%s", v)
 	}
 	if strings.Contains(v, "z.example.") {
@@ -207,6 +207,41 @@ func TestForeignModelUpstreamsEmptyAndError(t *testing.T) {
 	f, _ = f.Update(key("u"))
 	if !strings.Contains(f.View(), "read config: boom") {
 		t.Errorf("upstream read error not shown:\n%s", f.View())
+	}
+}
+
+// TestForeignModelUpstreamsFilterMiss pins the filter-miss placeholder: an
+// active filter with no matching upstream row names the query instead of the
+// generic empty-list placeholder.
+func TestForeignModelUpstreamsFilterMiss(t *testing.T) {
+	f := newForeignModel(nil, nil, nil)
+	f.setUpstreams([]UpstreamRow{
+		{Kind: "forward-zone", Name: "alpha.", Source: "a.conf", Entries: 1},
+	}, "")
+	f.resize(80, 24)
+	f, _ = f.Update(key("u"))
+
+	f.filter = "zzz-no-such"
+	f.applyFilter()
+	if len(f.upShown) != 0 {
+		t.Fatalf("upShown = %+v, want no matches", f.upShown)
+	}
+	want := `no upstreams match "zzz-no-such"`
+	if v := f.View(); !strings.Contains(v, want) {
+		t.Errorf("filter-miss view missing %q:\n%s", want, v)
+	}
+}
+
+// TestUpstreamRowsPluralization pins the singular/plural entry count in the
+// config-file upstream rows.
+func TestUpstreamRowsPluralization(t *testing.T) {
+	one := upstreamRows([]UpstreamRow{{Kind: "forward-zone", Name: "a.", Source: "a.conf", Entries: 1}})
+	if len(one) != 1 || !strings.Contains(one[0].text, "· 1 entry ·") {
+		t.Errorf("single-entry row = %+v, want `· 1 entry ·`", one)
+	}
+	two := upstreamRows([]UpstreamRow{{Kind: "forward-zone", Name: "b.", Source: "b.conf", Entries: 2}})
+	if len(two) != 1 || !strings.Contains(two[0].text, "· 2 entries ·") {
+		t.Errorf("two-entry row = %+v, want `· 2 entries ·`", two)
 	}
 }
 

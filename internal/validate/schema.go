@@ -184,7 +184,7 @@ func validateAddress(value string) error {
 		if !strings.HasPrefix(rest, ":") {
 			return fmt.Errorf("invalid address %q", value)
 		}
-		return validatePort(rest[1:], value)
+		return validatePort(rest[1:], value, "address")
 	}
 	if _, err := netip.ParseAddr(value); err == nil {
 		return nil
@@ -194,7 +194,7 @@ func validateAddress(value string) error {
 		return err
 	}
 	if hasPort {
-		return validatePort(port, value)
+		return validatePort(port, value, "address")
 	}
 	return nil
 }
@@ -212,9 +212,9 @@ func validateHost(host, whole string) error {
 	return nil
 }
 
-func validatePort(port, whole string) error {
+func validatePort(port, whole, noun string) error {
 	if _, err := parsePort(port); err != nil {
-		return fmt.Errorf("invalid port %q in address %q", port, whole)
+		return fmt.Errorf("invalid port %q in %s %q", port, noun, whole)
 	}
 	return nil
 }
@@ -263,10 +263,10 @@ func validateAccessCtrl(value string) error {
 		return errors.New(`expected "<CIDR> <action>"`)
 	}
 	if err := validateCIDR(fields[0]); err != nil {
-		return err
+		return fmt.Errorf("access-control: %w", err)
 	}
 	if !accessCtrlActions[fields[1]] {
-		return fmt.Errorf("invalid action %q", fields[1])
+		return fmt.Errorf("access-control: invalid action %q", fields[1])
 	}
 	return nil
 }
@@ -310,7 +310,7 @@ func validateUpstream(value string) error {
 	host := addr
 	if i := strings.LastIndexByte(addr, '@'); i >= 0 {
 		host = addr[:i]
-		if err := validatePort(addr[i+1:], value); err != nil {
+		if err := validatePort(addr[i+1:], value, "address"); err != nil {
 			return err
 		}
 	}
@@ -345,7 +345,7 @@ func validateHostValue(value string) error {
 	host := value
 	if i := strings.LastIndexByte(value, '@'); i >= 0 {
 		host = value[:i]
-		if err := validatePort(value[i+1:], value); err != nil {
+		if err := validatePort(value[i+1:], value, "host"); err != nil {
 			return err
 		}
 	}

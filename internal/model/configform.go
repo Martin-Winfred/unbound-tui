@@ -71,9 +71,9 @@ func (m RootModel) sectionAt(i int) (domain.Section, bool) {
 
 // --- constructors (wire the form plus its config-view target into the root) ---
 
-// newSectionForm opens the new-section form. Both fields are always visible;
-// Name is only applied when the Kind is a named kind.
-func (m *RootModel) newSectionForm() {
+// openAddSectionForm opens the new-section form. Both fields are always
+// visible; Name is only applied when the Kind is a named kind.
+func (m *RootModel) openAddSectionForm() {
 	m.form = RecordForm{
 		mode:   FormAddSection,
 		labels: []string{"Kind", "Name"},
@@ -334,6 +334,12 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
+// scalarConflictLineFmt is the pinned wording shared by the add-time
+// scalarWarning notice and the apply-time scalar refusal in root.go, so the
+// two can never drift. It names the option, the foreign source and the manual
+// resolution hint documented in deploy.md.
+const scalarConflictLineFmt = "%s: %s already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)"
+
 // scalarWarning returns the add-time conflict notice for a singleton option
 // just set in section secIndex, or "" when the key is not a singleton, the
 // section kind is not server/remote-control, or no foreign source sets it.
@@ -354,8 +360,7 @@ func (m RootModel) scalarWarning(secIndex int, key string, submittedDisabled boo
 	if len(sources) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s: %s already set in %s — edit that file manually (see deploy.md: Conflicts and manual resolution)",
-		s.Kind, key, sources[0])
+	return fmt.Sprintf(scalarConflictLineFmt, s.Kind, key, sources[0])
 }
 
 // hasActiveScalar reports whether the fragment actively sets the singleton

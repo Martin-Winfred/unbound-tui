@@ -29,8 +29,11 @@ const maxTTL = 604800 // 7 days
 
 // ValidateRecord validates a record in the context of the zone it belongs to.
 // It is the single entry point for every write path: the fragment file is
-// only ever produced from records that passed this check. TTL, type and rdata
-// are validated by ValidateRRLine (the owner by validRecordName above), so a
+// only ever produced from records that passed this check. The gate is
+// deliberately tightened beyond unbound's own permissive parser — the owner
+// shape, injection characters and unknown record types are rejected here, and
+// the record type is matched case-insensitively. TTL, type and rdata are
+// validated by ValidateRRLine (the owner by validRecordName above), so a
 // record and the local-data line it renders to accept the same values.
 func ValidateRecord(zone string, r domain.Record) error {
 	if err := ValidateZoneName(zone); err != nil {
@@ -50,10 +53,12 @@ func ValidateRecord(zone string, r domain.Record) error {
 }
 
 // ValidateRRLine validates one local-data RR line: `owner ttl [class] rtype
-// rdata`, where the class (IN) is optional. A single pair of surrounding
-// double quotes is stripped first, since the raw value of a local-data entry
-// keeps them. The owner may be a relative name (as accepted by ValidateRecord)
-// or a fully-qualified name with a trailing dot, as unbound writes it.
+// rdata`, where the class (IN) is optional. The TTL is required: unlike
+// unbound's own parser, this gate applies no default when the field is
+// missing. A single pair of surrounding double quotes is stripped first, since
+// the raw value of a local-data entry keeps them. The owner may be a relative
+// name (as accepted by ValidateRecord) or a fully-qualified name with a
+// trailing dot, as unbound writes it.
 func ValidateRRLine(line string) error {
 	line = strings.TrimSpace(line)
 	if len(line) >= 2 && line[0] == '"' && line[len(line)-1] == '"' {

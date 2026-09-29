@@ -510,6 +510,9 @@ func (f ForeignModel) upstreamBody(w, ph int) string {
 		return th.bad.Render(truncate("upstreams: "+f.upErr, w))
 	}
 	if len(f.upShown) == 0 {
+		if f.filter != "" {
+			return th.dimStyle.Render(truncate(fmt.Sprintf("no upstreams match %q", f.filter), w))
+		}
 		return th.dimStyle.Render(truncate("no foreign forward/stub sections", w))
 	}
 	title := fmt.Sprintf("Foreign upstreams · %d", len(f.upShown))
@@ -522,7 +525,7 @@ func (f ForeignModel) upstreamBody(w, ph int) string {
 func upstreamRows(rows []UpstreamRow) []row {
 	out := make([]row, 0, len(rows))
 	for _, u := range rows {
-		text := fmt.Sprintf("%s %s · %d entries · %s", u.Kind, u.Name, u.Entries, u.Source)
+		text := fmt.Sprintf("%s %s · %s · %s", u.Kind, u.Name, entryCount(u.Entries), u.Source)
 		if u.Dead {
 			text += " ⛔"
 		}

@@ -324,6 +324,12 @@ func rebuildSection(s *domain.Section, kind, name string, addrs []string, tlsUp,
 // non-blocking add-time warning when the submitted identity already exists in
 // a live foreign forward/stub section.
 func (m RootModel) applySectionForm(msg SectionFormSubmitMsg) (tea.Model, tea.Cmd) {
+	// A projection failure elsewhere (StateError) is louder than a late
+	// specialized submission; keep it instead of folding over it. Mirrors the
+	// A-chain guard in applyConfigForm.
+	if m.state == StateError {
+		return m, nil
+	}
 	m.form = RecordForm{}
 	m.secForm = SectionForm{}
 	m.state = StateReady

@@ -45,7 +45,7 @@ func nameEntries(s domain.Section) []string {
 
 func TestConfigFormAddSectionFields(t *testing.T) {
 	m := configModel(t, domain.Fragment{})
-	m.newSectionForm()
+	m.openAddSectionForm()
 	if m.state != StateForm || m.form.mode != FormAddSection {
 		t.Fatalf("state/mode = %v/%v, want StateForm/FormAddSection", m.state, m.form.mode)
 	}
@@ -74,7 +74,7 @@ func TestConfigFormAddSectionSubmit(t *testing.T) {
 			m := configModel(t, lifecycleFixture())
 			before := len(m.frag.Sections)
 
-			m.newSectionForm()
+			m.openAddSectionForm()
 			m.form.inputs[0].SetValue(tc.kind)
 			m.form.inputs[1].SetValue(tc.field)
 
@@ -124,7 +124,7 @@ func TestConfigFormAddSectionRejectsBadKind(t *testing.T) {
 	m := configModel(t, domain.Fragment{})
 	before := len(m.frag.Sections)
 
-	m.newSectionForm()
+	m.openAddSectionForm()
 	m.form.inputs[0].SetValue("foo bar")
 	next, cmd := submitFormKey(t, m, "ctrl+s")
 
@@ -339,7 +339,7 @@ func TestConfigFormEditEntryRewritesByIndex(t *testing.T) {
 func TestConfigFormSubmitKeyRouting(t *testing.T) {
 	t.Run("ctrl+s submits from the first field", func(t *testing.T) {
 		m := configModel(t, domain.Fragment{})
-		m.newSectionForm()
+		m.openAddSectionForm()
 		m.form.inputs[0].SetValue("server")
 		next, cmd := submitFormKey(t, m, "ctrl+s")
 		if cmd == nil {
@@ -352,7 +352,7 @@ func TestConfigFormSubmitKeyRouting(t *testing.T) {
 
 	t.Run("enter on the last field submits", func(t *testing.T) {
 		m := configModel(t, domain.Fragment{})
-		m.newSectionForm()
+		m.openAddSectionForm()
 		m.form.inputs[0].SetValue("server")
 		m.form.setFocus(1)
 		next, cmd := submitFormKey(t, m, "enter")
@@ -366,7 +366,7 @@ func TestConfigFormSubmitKeyRouting(t *testing.T) {
 
 	t.Run("enter on a non-last field advances", func(t *testing.T) {
 		m := configModel(t, domain.Fragment{})
-		m.newSectionForm()
+		m.openAddSectionForm()
 		next, cmd := submitFormKey(t, m, "enter")
 		if cmd != nil {
 			t.Fatalf("enter advanced but produced %T", cmd())

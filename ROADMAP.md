@@ -64,11 +64,11 @@ directive we do not model is passed through verbatim.
 
 ## M4 - server / remote-control common options
 
-- [ ] `server:` - `interface`, `port`, `access-control` (CIDR + allow/deny),
+- [x] `server:` - `interface`, `port`, `access-control` (CIDR + allow/deny),
       `tls-cert-bundle`, `root-hints`, `username`, `verbosity`.
-- [ ] `remote-control:` - `control-enable`, `control-interface`,
+- [x] `remote-control:` - `control-enable`, `control-interface`,
       `control-use-cert` (and certificate paths).
-- [ ] Conflict detection for duplicate scalar options set elsewhere.
+- [x] Conflict detection for duplicate scalar options set elsewhere.
 
 ## M5 - Polish, docs, release
 

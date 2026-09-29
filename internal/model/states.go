@@ -14,9 +14,10 @@ const (
 	StateError
 )
 
-// ZonesLoadedMsg carries the model parsed from the fragment file at startup.
+// ZonesLoadedMsg carries the generic fragment read from disk at startup. The
+// root model stores it as the source of truth and projects the zones from it.
 type ZonesLoadedMsg struct {
-	Zones []domain.Zone
+	Fragment domain.Fragment
 }
 
 // AppliedMsg reports a successful write + reload.

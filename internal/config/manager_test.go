@@ -27,43 +27,70 @@ func testManager(t *testing.T) (*Manager, string) {
 	return m, frag
 }
 
-func TestManagerReadWrite(t *testing.T) {
-	m, frag := testManager(t)
+// frag parses src into a Fragment. The helper lives here after merge_test.go
+// was removed; serialize_test.go uses it too.
+func frag(t *testing.T, src string) domain.Fragment {
+	t.Helper()
+	f, err := parseFragment([]byte(src))
+	if err != nil {
+		t.Fatalf("parseFragment: %v", err)
+	}
+	return f
+}
 
-	if zones, err := m.Read(); err != nil || len(zones) != 0 {
-		t.Fatalf("Read on missing fragment = %v, %v; want empty, nil", zones, err)
+func TestManagerReadWriteFragment(t *testing.T) {
+	m, fragPath := testManager(t)
+
+	if f, err := m.ReadFragment(); err != nil || len(f.Sections) != 0 {
+		t.Fatalf("ReadFragment on missing fragment = %+v, %v; want empty, nil", f, err)
 	}
 
-	want := []domain.Zone{{
-		Name: "example.com.", Type: "transparent",
-		Records: []domain.Record{{Name: "www", RType: "A", Value: "192.0.2.1", TTL: 300}},
-	}}
-	if err := m.Write(want); err != nil {
-		t.Fatalf("Write: %v", err)
+	want := domain.Fragment{Sections: []domain.Section{{
+		Kind: "server",
+		Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." transparent`},
+			{Key: "local-data", Value: `"example.com. 300 IN A 192.0.2.1"`},
+		},
+	}}}
+	if err := m.WriteFragment(want); err != nil {
+		t.Fatalf("WriteFragment: %v", err)
 	}
-	if _, err := os.Stat(frag); err != nil {
+	if _, err := os.Stat(fragPath); err != nil {
 		t.Fatalf("fragment not created: %v", err)
 	}
-	got, err := m.Read()
+	got, err := m.ReadFragment()
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("ReadFragment: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Read = %+v, want %+v", got, want)
+		t.Errorf("ReadFragment = %+v, want %+v", got, want)
+	}
+
+	zones, err := ZonesFromFragment(got)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
+	if len(zones) != 1 || zones[0].Name != "example.com." {
+		t.Errorf("projected zones = %+v, want example.com.", zones)
 	}
 }
 
-func TestManagerReadMalformed(t *testing.T) {
-	m, frag := testManager(t)
-	if err := os.WriteFile(frag, []byte("server:\nlocal-data: \"broken\n"), 0644); err != nil {
+func TestZonesFromFragmentMalformed(t *testing.T) {
+	m, fragPath := testManager(t)
+	if err := os.WriteFile(fragPath, []byte("server:\nlocal-data: \"broken\n"), 0644); err != nil {
 		t.Fatalf("write fragment: %v", err)
 	}
-	zones, err := m.Read()
+	// Reading is total; projection is what rejects the malformed entry.
+	f, err := m.ReadFragment()
+	if err != nil {
+		t.Fatalf("ReadFragment = %v, want nil (parsing is total)", err)
+	}
+	zones, err := ZonesFromFragment(f)
 	if err == nil {
-		t.Fatalf("Read = %+v, nil error; want projection error", zones)
+		t.Fatalf("ZonesFromFragment = %+v, nil error; want projection error", zones)
 	}
 	if !strings.Contains(err.Error(), "local-data") {
-		t.Errorf("Read error %q does not name the malformed local-data entry", err)
+		t.Errorf("projection error %q does not name the malformed local-data entry", err)
 	}
 }
 

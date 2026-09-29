@@ -16,11 +16,30 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/validate"
 )
 
+// View selects which top-level pane the root model renders. Task 5 wires the
+// Config view in; until then the zero value is the zones view.
+type View int
+
+const (
+	ViewZones View = iota
+	ViewConfig
+)
+
+// ConfigViewModel is the placeholder for the generic config editor added by
+// Task 5. It carries no state yet.
+type ConfigViewModel struct{}
+
 // RootModel is the top-level tea.Model.
 type RootModel struct {
 	ctl     domain.Controller
 	cfg     *config.Manager
 	version string
+
+	// frag is the single source of truth: the generic fragment model read
+	// from disk and kept in sync with zones by regenLocal after every edit.
+	frag    domain.Fragment
+	view    View
+	cfgView ConfigViewModel
 
 	zones       []domain.Zone
 	zoneCursor  int
@@ -50,14 +69,14 @@ func NewRootModel(ctl domain.Controller, cfg *config.Manager, version string) Ro
 	return RootModel{ctl: ctl, cfg: cfg, version: version, state: StateReady, zoneFocused: true}
 }
 
-// Init loads the fragment model from disk.
+// Init loads the generic fragment model from disk.
 func (m RootModel) Init() tea.Cmd {
 	return func() tea.Msg {
-		zones, err := m.cfg.Read()
+		f, err := m.cfg.ReadFragment()
 		if err != nil {
 			return ErrorMsg{fmt.Errorf("read fragment: %w", err)}
 		}
-		return ZonesLoadedMsg{Zones: zones}
+		return ZonesLoadedMsg{Fragment: f}
 	}
 }
 
@@ -88,7 +107,14 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ZonesLoadedMsg:
-		m.zones = msg.Zones
+		m.frag = msg.Fragment
+		zones, err := config.ZonesFromFragment(msg.Fragment)
+		if err != nil {
+			// Projection can fail on malformed local-* entries; surface it
+			// loudly through the normal error path, never silently.
+			return m, func() tea.Msg { return ErrorMsg{fmt.Errorf("project fragment: %w", err)} }
+		}
+		m.zones = zones
 		m.clampCursors()
 		m.state = StateReady
 		return m, nil
@@ -262,6 +288,7 @@ func (m RootModel) applyForm(msg FormSubmitMsg) (tea.Model, tea.Cmd) {
 			m.zones[z].Type = msg.Type
 		}
 	}
+	m.regen()
 	m.dirty = true
 	return m, nil
 }
@@ -286,16 +313,18 @@ func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 }
 
 // apply validates the whole model, writes the fragment atomically and reloads
-// Unbound. It runs as a tea.Cmd because reload can block.
+// Unbound. It runs as a tea.Cmd because reload can block. The fragment is
+// already in sync with the zone model (regenLocal runs on every edit).
 func (m RootModel) apply() tea.Cmd {
 	zones := cloneZones(m.zones)
+	frag := m.frag
 	cfg := m.cfg
 	ctl := m.ctl
 	return func() tea.Msg {
 		if err := validateModel(zones); err != nil {
 			return ErrorMsg{err}
 		}
-		if err := cfg.Write(zones); err != nil {
+		if err := cfg.WriteFragment(frag); err != nil {
 			return ErrorMsg{fmt.Errorf("write fragment: %w", err)}
 		}
 		if err := ctl.Reload(); err != nil {
@@ -418,6 +447,7 @@ func (m *RootModel) toggleDisabled() {
 		}
 		m.zones[z].Records[m.recCursor].Disabled = !m.zones[z].Records[m.recCursor].Disabled
 	}
+	m.regen()
 	m.dirty = true
 }
 
@@ -427,6 +457,7 @@ func (m *RootModel) deleteZone(index int) {
 		return
 	}
 	m.zones = append(m.zones[:z], m.zones[z+1:]...)
+	m.regen()
 	m.clampCursors()
 	m.dirty = true
 }
@@ -438,8 +469,15 @@ func (m *RootModel) deleteRecord(zoneIndex, recIndex int) {
 	}
 	recs := m.zones[z].Records
 	m.zones[z].Records = append(recs[:recIndex], recs[recIndex+1:]...)
+	m.regen()
 	m.clampCursors()
 	m.dirty = true
+}
+
+// regen folds the edited zone model back into the fragment, keeping the
+// fragment the single source of truth. It is a pure copy-on-write helper.
+func (m *RootModel) regen() {
+	m.frag = regenLocal(m.frag, m.zones)
 }
 
 // --- helpers ---

@@ -1,4 +1,4 @@
-package config
+package model
 
 import (
 	"fmt"
@@ -7,22 +7,21 @@ import (
 	"github.com/Martin-Winfred/unbound-tui/internal/domain"
 )
 
-// FragmentFromZones folds the edited zone model back into a base fragment,
-// returning a new Fragment and leaving base untouched.
+// regenLocal folds the edited zone model back into frag, returning a new
+// Fragment and leaving frag untouched.
 //
-// It is the temporary shim between the v0.1 zone model and the generic model:
-// every local-zone and local-data entry is stripped from every section, and
+// Every local-zone and local-data entry is stripped from every section, and
 // the edited zones are regenerated into a single server section (created at
-// the front when the base has none). All other entries and sections are
+// the front when the fragment has none). All other entries and sections are
 // preserved in place — including sections left empty by the strip.
 //
 // Records are regenerated in v0.1 layout: active local-zone entries, then
 // active local-data entries, then disabled local-zone entries, then disabled
 // local-data entries (records of a disabled zone included). Zones are stable
 // sorted by name first.
-func FragmentFromZones(base domain.Fragment, zones []domain.Zone) domain.Fragment {
-	sections := make([]domain.Section, len(base.Sections))
-	for i, s := range base.Sections {
+func regenLocal(f domain.Fragment, zones []domain.Zone) domain.Fragment {
+	sections := make([]domain.Section, len(f.Sections))
+	for i, s := range f.Sections {
 		var entries []domain.Entry
 		for _, e := range s.Entries {
 			if e.Key == "local-zone" || e.Key == "local-data" {

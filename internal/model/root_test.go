@@ -41,7 +41,24 @@ func newTestModel(t *testing.T) (RootModel, *fakeCtl) {
 	}
 	mgr.SetFragmentPath(filepath.Join(dir, "frag.conf"))
 	ctl := &fakeCtl{}
-	return NewRootModel(ctl, mgr, "test"), ctl
+	m := NewRootModel(ctl, mgr, "test")
+	// Run the Init path so models start with a valid (empty) fragment, which
+	// mutations then regenerate into.
+	next, _ := m.Update(m.Init()())
+	return asRoot(t, next), ctl
+}
+
+// localEntries flattens the local-zone/local-data entries of a fragment.
+func localEntries(f domain.Fragment) []domain.Entry {
+	var out []domain.Entry
+	for _, s := range f.Sections {
+		for _, e := range s.Entries {
+			if e.Key == "local-zone" || e.Key == "local-data" {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
 }
 
 func asRoot(t *testing.T, m tea.Model) RootModel {
@@ -77,6 +94,55 @@ func TestInitLoadsZones(t *testing.T) {
 	if len(m.zones) != 0 {
 		t.Errorf("zones = %+v, want empty", m.zones)
 	}
+	if len(m.frag.Sections) != 0 {
+		t.Errorf("frag sections = %+v, want empty", m.frag.Sections)
+	}
+}
+
+func TestInitStoresFragmentAndProjectsZones(t *testing.T) {
+	m, _ := newTestModel(t)
+	src := "server:\n" +
+		"local-zone: \"example.com.\" static\n" +
+		"local-data: \"example.com. 300 IN A 192.0.2.1\"\n"
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte(src), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+
+	loaded := m.Init()().(ZonesLoadedMsg)
+	if len(loaded.Fragment.Sections) != 1 {
+		t.Fatalf("Init fragment = %+v, want one server section", loaded.Fragment)
+	}
+	m = asRoot(t, mustUpdate(t, m, loaded))
+	if len(m.zones) != 1 || m.zones[0].Name != "example.com." {
+		t.Fatalf("zones = %+v, want one example.com. zone", m.zones)
+	}
+	if got := localEntries(m.frag); len(got) != 2 {
+		t.Errorf("stored frag local entries = %+v, want 2", got)
+	}
+}
+
+// TestProjectionErrorSurfacesLoudly pins that a malformed local-* entry keeps
+// its fragment but moves the model into StateError via the normal error path.
+func TestProjectionErrorSurfacesLoudly(t *testing.T) {
+	m, _ := newTestModel(t)
+	src := "server:\nlocal-data: \"broken\n"
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte(src), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+
+	loaded := m.Init()().(ZonesLoadedMsg)
+	next, cmd := m.Update(loaded)
+	if cmd == nil {
+		t.Fatal("projection error produced no command, want an ErrorMsg")
+	}
+	errMsg, ok := cmd().(ErrorMsg)
+	if !ok {
+		t.Fatalf("projection error produced %T, want ErrorMsg", cmd())
+	}
+	root := asRoot(t, mustUpdate(t, asRoot(t, next), errMsg))
+	if root.state != StateError || root.lastError == nil {
+		t.Errorf("state/error = %v/%v, want StateError and a non-nil error", root.state, root.lastError)
+	}
 }
 
 func mustUpdate(t *testing.T, m RootModel, msg tea.Msg) tea.Model {
@@ -94,6 +160,9 @@ func TestAddZoneThenApplyWritesAndReloads(t *testing.T) {
 	}
 	if len(m.zones) != 1 || m.zones[0].Name != "example.com." {
 		t.Fatalf("zones = %+v, want one normalized zone", m.zones)
+	}
+	if got := localEntries(m.frag); len(got) != 1 || got[0].Value != `"example.com." transparent` {
+		t.Fatalf("frag local entries = %+v, want the new local-zone", got)
 	}
 
 	msg := m.apply()()
@@ -154,6 +223,9 @@ func TestToggleZoneDisabledEnablesRecords(t *testing.T) {
 	if m.zones[0].Records[0].Disabled {
 		t.Error("record still disabled after enabling its zone")
 	}
+	if got := localEntries(m.frag); len(got) != 2 || got[0].Disabled || got[1].Disabled {
+		t.Errorf("frag local entries = %+v, want both re-enabled", got)
+	}
 }
 
 func TestToggleRecordDisabled(t *testing.T) {
@@ -166,6 +238,9 @@ func TestToggleRecordDisabled(t *testing.T) {
 	m.toggleDisabled()
 	if !m.zones[0].Records[0].Disabled {
 		t.Error("record not disabled after toggle")
+	}
+	if got := localEntries(m.frag); len(got) != 2 || !got[1].Disabled {
+		t.Errorf("frag local entries = %+v, want the record disabled", got)
 	}
 }
 
@@ -235,6 +310,9 @@ func TestDeleteRecordAndZoneFlow(t *testing.T) {
 	if len(next.zones[0].Records) != 0 || !next.dirty {
 		t.Errorf("record not deleted or not dirty: %+v dirty=%v", next.zones[0], next.dirty)
 	}
+	if got := localEntries(next.frag); len(got) != 2 {
+		t.Errorf("frag local entries after record delete = %+v, want only the two zones", got)
+	}
 
 	// Delete a zone: zone pane focused.
 	next.zoneFocused = true
@@ -245,6 +323,9 @@ func TestDeleteRecordAndZoneFlow(t *testing.T) {
 	next = asRoot(t, mustUpdate(t, next, key("y")))
 	if len(next.zones) != 1 || next.zones[0].Name != "b.example." {
 		t.Errorf("zones after delete = %+v, want only b.example.", next.zones)
+	}
+	if got := localEntries(next.frag); len(got) != 1 || got[0].Value != `"b.example." transparent` {
+		t.Errorf("frag local entries after zone delete = %+v, want only b.example.", got)
 	}
 }
 
@@ -287,6 +368,29 @@ func TestAddDuplicateZoneRejected(t *testing.T) {
 	}
 	if len(next.zones) != 1 {
 		t.Errorf("zones = %+v, want the original only", next.zones)
+	}
+}
+
+// TestMutationsRegenerateFragment checks that add-record, edit-ttl and
+// set-type all fold into the stored fragment immediately.
+func TestMutationsRegenerateFragment(t *testing.T) {
+	m, _ := newTestModel(t)
+
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddRecord, ZoneIndex: 0, Name: "www", Type: "A", Value: "192.0.2.1", TTL: 300}))
+	got := localEntries(m.frag)
+	if len(got) != 2 || got[1].Key != "local-data" || got[1].Value != `"www.example.com. 300 IN A 192.0.2.1"` {
+		t.Fatalf("frag after add-record = %+v, want the local-data entry", got)
+	}
+
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormEditTTL, ZoneIndex: 0, RecIndex: 0, TTL: 60}))
+	if got := localEntries(m.frag); got[1].Value != `"www.example.com. 60 IN A 192.0.2.1"` {
+		t.Errorf("frag after edit-ttl = %+v, want TTL 60", got)
+	}
+
+	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormSetType, ZoneIndex: 0, Type: "static"}))
+	if got := localEntries(m.frag); got[0].Value != `"example.com." static` {
+		t.Errorf("frag after set-type = %+v, want static", got)
 	}
 }
 

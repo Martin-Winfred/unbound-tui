@@ -68,11 +68,87 @@ func ParseFragment(path string) (domain.Fragment, error) {
 // always returns a nil error.
 func parseFragment(src []byte) (domain.Fragment, error) {
 	var (
-		sections  []domain.Section
-		active    []bool // parallel to sections: opened by an uncommented header/entry
-		cur       = -1   // section receiving active entries
+		sections []domain.Section
+		active   []bool // parallel to sections: opened by an uncommented header/entry
+		cur      = -1   // section receiving active entries
+		disCur   = -1   // section receiving entries inside a disabled block
+	)
+
+	for _, item := range scanConfig(src) {
+		// Any active directive, and the first item of a disabled group, end
+		// the previous group's attachment target. scanConfig marks the group
+		// start so blank- and marker-separated groups reset exactly as the
+		// old line walker did.
+		if !item.disabled || item.groupStart {
+			disCur = -1
+		}
+
+		if item.header {
+			if item.disabled {
+				if idx := lastActive(sections, active, item.kind); idx >= 0 {
+					disCur = idx
+				} else {
+					sections = append(sections, domain.Section{Kind: item.kind})
+					active = append(active, false)
+					disCur = len(sections) - 1
+				}
+				continue
+			}
+			sections = append(sections, domain.Section{Kind: item.kind})
+			active = append(active, true)
+			cur = len(sections) - 1
+			continue
+		}
+
+		if item.disabled {
+			if disCur < 0 {
+				disCur = cur
+			}
+			if disCur < 0 {
+				sections = append(sections, domain.Section{Kind: ""})
+				active = append(active, false)
+				disCur = len(sections) - 1
+				cur = disCur
+			}
+			sections[disCur].Entries = append(sections[disCur].Entries, item.entry)
+			continue
+		}
+
+		if cur < 0 {
+			sections = append(sections, domain.Section{Kind: ""})
+			active = append(active, true)
+			cur = len(sections) - 1
+		}
+		sections[cur].Entries = append(sections[cur].Entries, item.entry)
+	}
+
+	return domain.Fragment{Sections: sections}, nil
+}
+
+// scanItem is one grammatical item of a config file, in order.
+type scanItem struct {
+	header   bool         // true: section header
+	kind     string       // header: the section kind
+	entry    domain.Entry // non-header: a directive line (include entries included)
+	disabled bool         // item came from inside the disabled block (commented)
+	// groupStart marks the first disabled item of a group, where a group is a
+	// run of disabled items preceded by the marker, a blank line or an active
+	// directive. Callers that attach disabled items to a target section reset
+	// that target on a group start, reproducing the line walker's boundaries.
+	groupStart bool
+}
+
+// scanConfig classifies the lines of a config file into an ordered item
+// stream. It owns the lexical concerns only: whitespace trimming (including
+// CRLF), the section-header grammar (an empty value after the first ":"),
+// ordinary comments, and disabled-block mode (the marker, the "# " body
+// extraction and the prose skip). It makes no section-attachment decisions;
+// parseFragment folds the stream into sections.
+func scanConfig(src []byte) []scanItem {
+	var (
+		items     []scanItem
 		inDisable bool
-		disCur    = -1 // section receiving entries inside a disabled block
+		disGroup  bool // a disabled item was already emitted for this group
 	)
 
 	for _, raw := range strings.Split(string(src), "\n") {
@@ -83,13 +159,11 @@ func parseFragment(src []byte) (domain.Fragment, error) {
 			// A blank line terminates a disabled block; it does not close
 			// the open active section.
 			inDisable = false
-			disCur = -1
-			continue
+			disGroup = false
 
 		case line == disabledMarker:
 			inDisable = true
-			disCur = -1
-			continue
+			disGroup = false
 
 		case strings.HasPrefix(line, "#"):
 			if !inDisable {
@@ -103,49 +177,29 @@ func parseFragment(src []byte) (domain.Fragment, error) {
 				continue // prose / ordinary comment, not a disabled directive
 			}
 			key, value, header := cutDirective(body)
+			item := scanItem{disabled: true, groupStart: !disGroup}
 			if header {
-				if idx := lastActive(sections, active, key); idx >= 0 {
-					disCur = idx
-				} else {
-					sections = append(sections, domain.Section{Kind: key})
-					active = append(active, false)
-					disCur = len(sections) - 1
-				}
-				continue
+				item.header = true
+				item.kind = key
+			} else {
+				item.entry = domain.Entry{Key: key, Value: value, Disabled: true}
 			}
-			if disCur < 0 {
-				disCur = cur
-			}
-			if disCur < 0 {
-				sections = append(sections, domain.Section{Kind: ""})
-				active = append(active, false)
-				disCur = len(sections) - 1
-				cur = disCur
-			}
-			sections[disCur].Entries = append(sections[disCur].Entries,
-				domain.Entry{Key: key, Value: value, Disabled: true})
+			items = append(items, item)
+			disGroup = true
 
 		default:
 			inDisable = false
-			disCur = -1
+			disGroup = false
 			key, value, header := cutDirective(line)
 			if header {
-				sections = append(sections, domain.Section{Kind: key})
-				active = append(active, true)
-				cur = len(sections) - 1
+				items = append(items, scanItem{header: true, kind: key})
 				continue
 			}
-			if cur < 0 {
-				sections = append(sections, domain.Section{Kind: ""})
-				active = append(active, true)
-				cur = len(sections) - 1
-			}
-			sections[cur].Entries = append(sections[cur].Entries,
-				domain.Entry{Key: key, Value: value})
+			items = append(items, scanItem{entry: domain.Entry{Key: key, Value: value}})
 		}
 	}
 
-	return domain.Fragment{Sections: sections}, nil
+	return items
 }
 
 // cutDirective splits a directive at its first ":" into the key and the raw

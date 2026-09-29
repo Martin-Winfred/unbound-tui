@@ -142,8 +142,12 @@ type scanItem struct {
 // stream. It owns the lexical concerns only: whitespace trimming (including
 // CRLF), the section-header grammar (an empty value after the first ":"),
 // ordinary comments, and disabled-block mode (the marker, the "# " body
-// extraction and the prose skip). It makes no section-attachment decisions;
-// parseFragment folds the stream into sections.
+// extraction and the prose skip). For disabled items it also reports
+// groupStart, the lexical boundary between disabled groups (a blank line, the
+// marker or an active directive), so callers can reset their
+// disabled-attachment target there. scanConfig itself selects no target
+// section; parseFragment folds the stream into sections and consumes
+// groupStart for that reset.
 func scanConfig(src []byte) []scanItem {
 	var (
 		items     []scanItem

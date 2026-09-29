@@ -144,6 +144,41 @@ name: "."
 			}}},
 		},
 		{
+			name: "disabled-group boundary reset",
+			src: `forward-zone:
+f: 1
+server:
+s: 1
+
+# unbound-tui:disabled
+# forward-zone:
+# c: 1
+
+# unbound-tui:disabled
+# d: 1
+`,
+			want: domain.Fragment{Sections: []domain.Section{
+				{
+					Kind: "forward-zone",
+					Entries: []domain.Entry{
+						{Key: "f", Value: "1"},
+						{Key: "c", Value: "1", Disabled: true},
+					},
+				},
+				{
+					Kind: "server",
+					Entries: []domain.Entry{
+						{Key: "s", Value: "1"},
+						// The blank line ends the first disabled group; the
+						// headerless second group resets its target to the
+						// current active section (server), not the
+						// forward-zone section the first group attached to.
+						{Key: "d", Value: "1", Disabled: true},
+					},
+				},
+			}},
+		},
+		{
 			name: "CRLF",
 			src:  "server:\r\nlocal-zone: \"a.com\" refuse\r\n",
 			want: domain.Fragment{Sections: []domain.Section{{

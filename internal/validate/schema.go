@@ -29,6 +29,11 @@ const (
 	// TypeHost is a `hostname[@port]` entry, the value of a forward-host or
 	// stub-host upstream.
 	TypeHost Type = "host"
+	// TypeAccessCtrl is an access-control value, `"<CIDR> <action>"` (for
+	// example `"192.0.2.0/24 allow"`).
+	TypeAccessCtrl Type = "access-control"
+	// TypePort is a bare TCP/UDP port number in [1, 65535].
+	TypePort Type = "port"
 	TypeText Type = "text"
 )
 
@@ -42,12 +47,45 @@ var zoneTypeWhitelist = map[string]bool{
 	"transparent": true, "redirect": true,
 }
 
+// accessCtrlActions is the set of actions unbound accepts in an
+// access-control value. It mirrors unbound.conf(5) and is pinned here because
+// validate must not import config.
+var accessCtrlActions = map[string]bool{
+	"allow":              true,
+	"deny":               true,
+	"refuse":             true,
+	"allow_snoop":        true,
+	"deny_non_local":     true,
+	"refuse_non_local":   true,
+	"always_transparent": true,
+	"always_refuse":      true,
+	"always_nxdomain":    true,
+}
+
 // schemaRegistry seeds the (section kind, entry key) -> Type map. It covers
-// the local-* directives plus the forward-zone and stub-zone upstream
-// directives; everything else is free text.
+// the local-* directives, the forward-zone and stub-zone upstream directives,
+// and the server/remote-control options with a meaningful schema type;
+// everything else is free text.
 var schemaRegistry = map[[2]string]Type{
 	{"server", "local-data"}: TypeRR,
 	{"server", "local-zone"}: TypeZone,
+
+	{"server", "interface"}:       TypeAddr,
+	{"server", "port"}:            TypePort,
+	{"server", "verbosity"}:       TypeInt,
+	{"server", "username"}:        TypeText,
+	{"server", "tls-cert-bundle"}: TypePath,
+	{"server", "root-hints"}:      TypePath,
+	{"server", "access-control"}:  TypeAccessCtrl,
+
+	{"remote-control", "control-enable"}:    TypeBool,
+	{"remote-control", "control-interface"}: TypeAddr,
+	{"remote-control", "control-port"}:      TypePort,
+	{"remote-control", "control-use-cert"}:  TypeBool,
+	{"remote-control", "server-key-file"}:   TypePath,
+	{"remote-control", "server-cert-file"}:  TypePath,
+	{"remote-control", "control-key-file"}:  TypePath,
+	{"remote-control", "control-cert-file"}: TypePath,
 
 	{"forward-zone", "name"}:                 TypeText,
 	{"forward-zone", "forward-addr"}:         TypeUpstream,
@@ -95,6 +133,10 @@ func ValidateValue(t Type, value string) error {
 		return validateUpstream(value)
 	case TypeHost:
 		return validateHostValue(value)
+	case TypeAccessCtrl:
+		return validateAccessCtrl(value)
+	case TypePort:
+		return validatePortValue(value)
 	default: // TypeText and the empty Type
 		return validateText(value)
 	}
@@ -178,11 +220,31 @@ func validateHost(host, whole string) error {
 }
 
 func validatePort(port, whole string) error {
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
+	if _, err := parsePort(port); err != nil {
 		return fmt.Errorf("invalid port %q in address %q", port, whole)
 	}
 	return nil
+}
+
+// parsePort parses a bare decimal port number and enforces [1, 65535]. Its
+// error names the accepted range and is shared by the address and bare-port
+// validators.
+func parsePort(value string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid port %q, out of range [1, 65535]", value)
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("port %d out of range [1, 65535]", n)
+	}
+	return n, nil
+}
+
+// validatePortValue validates a bare port number, the value of a `port` or
+// `control-port` directive.
+func validatePortValue(value string) error {
+	_, err := parsePort(value)
+	return err
 }
 
 func validateCIDR(value string) error {
@@ -193,6 +255,24 @@ func validateCIDR(value string) error {
 	}
 	if p.Masked() != p {
 		return fmt.Errorf("invalid CIDR %q: host bits set", value)
+	}
+	return nil
+}
+
+// validateAccessCtrl validates an access-control value: exactly the two
+// whitespace-separated tokens `<CIDR> <action>`. The CIDR follows the same
+// rules as TypeCIDR (host bits must be clear) and the action must be one of
+// the pinned unbound actions.
+func validateAccessCtrl(value string) error {
+	fields := strings.Fields(value)
+	if len(fields) != 2 {
+		return fmt.Errorf(`expected "<CIDR> <action>"`)
+	}
+	if err := validateCIDR(fields[0]); err != nil {
+		return err
+	}
+	if !accessCtrlActions[fields[1]] {
+		return fmt.Errorf("invalid action %q", fields[1])
 	}
 	return nil
 }

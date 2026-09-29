@@ -37,17 +37,17 @@ directive we do not model is passed through verbatim.
 
 ## M2 - Generic editor UI (model)
 
-- [ ] Left pane: sections (including multiple `forward-zone` / `stub-zone`
+- [x] Left pane: sections (including multiple `forward-zone` / `stub-zone`
       instances); right pane: the selected section's entries.
-- [ ] Add/delete sections; add/edit/delete entries; same key feel as today
+- [x] Add/delete sections; add/edit/delete entries; same key feel as today
       (`a`/`e`/`d`/`w`/`g`/`G`/`ctrl+d`/...).
-- [ ] Specialized editors driven by a schema: bool, int, path, address, CIDR,
+- [x] Specialized editors driven by a schema: bool, int, path, address, CIDR,
       RR line.
-- [ ] **Unknown directives**: plain text edit, passed through verbatim.
-- [ ] Keep the friendly **Local data** (zone/record) view, derived from
+- [x] **Unknown directives**: plain text edit, passed through verbatim.
+- [x] Keep the friendly **Local data** (zone/record) view, derived from
       `local-zone` / `local-data`, and add a **Config** view over the generic
       model.
-- [ ] `view_test` coverage for section/entry editing, passthrough, disabled
+- [x] `view_test` coverage for section/entry editing, passthrough, disabled
       rendering.
 
 ## M3 - forward-zone / stub-zone (immediate need)

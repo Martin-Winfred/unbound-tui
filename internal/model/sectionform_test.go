@@ -231,6 +231,72 @@ func TestRebuildSectionStubKeys(t *testing.T) {
 	}
 }
 
+func TestSectionFormRebuildCarriesDisabled(t *testing.T) {
+	f := domain.Fragment{Sections: []domain.Section{
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: ".", Disabled: true},
+			{Key: "forward-addr", Value: "192.0.2.53", Disabled: true},
+			{Key: "forward-addr", Value: "192.0.2.54"},
+			{Key: "forward-tls-upstream", Value: "yes", Disabled: true},
+			{Key: "forward-first", Value: "no"},
+		}},
+	}}
+	m := openSpecialized(t, configModel(t, f), 0)
+	sf := m.secForm
+	sf.inputs[sf.addrLo+1].SetValue("")           // drop the active address
+	sf.inputs[sf.addrLo+2].SetValue("192.0.2.55") // add a new one
+	m.secForm = sf
+
+	next, cmd := stepSpecialized(t, m, "ctrl+s")
+	if cmd == nil {
+		t.Fatalf("submit produced no command; err = %v", next.secForm.err)
+	}
+	m = asRoot(t, mustUpdate(t, next, cmd().(SectionFormSubmitMsg)))
+
+	want := []domain.Entry{
+		{Key: "name", Value: ".", Disabled: true},
+		{Key: "forward-addr", Value: "192.0.2.53", Disabled: true}, // unchanged value keeps its flag
+		{Key: "forward-addr", Value: "192.0.2.55"},                 // new value is active
+		{Key: "forward-tls-upstream", Value: "yes", Disabled: true},
+		{Key: "forward-first", Value: "no"},
+	}
+	if got := m.frag.Sections[0].Entries; !reflect.DeepEqual(got, want) {
+		t.Errorf("entries =\n  %+v\nwant\n  %+v", got, want)
+	}
+}
+
+func TestSectionFormRebuildCollapsesDuplicateManagedKeys(t *testing.T) {
+	f := domain.Fragment{Sections: []domain.Section{
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: "first."},
+			{Key: "name", Value: "second."},
+			{Key: "forward-tls-upstream", Value: "yes"},
+			{Key: "forward-tls-upstream", Value: "no"},
+		}},
+	}}
+	m := openSpecialized(t, configModel(t, f), 0)
+	if got := m.secForm.inputs[m.secForm.nameIdx].Value(); got != "first." {
+		t.Errorf("prefilled name = %q, want the first duplicate's value", got)
+	}
+	if got := m.secForm.inputs[m.secForm.tlsUpIdx].Value(); got != "yes" {
+		t.Errorf("prefilled tls = %q, want the first duplicate's value", got)
+	}
+
+	next, cmd := stepSpecialized(t, m, "ctrl+s")
+	if cmd == nil {
+		t.Fatalf("submit produced no command; err = %v", next.secForm.err)
+	}
+	m = asRoot(t, mustUpdate(t, next, cmd().(SectionFormSubmitMsg)))
+
+	want := []domain.Entry{
+		{Key: "name", Value: "first."},
+		{Key: "forward-tls-upstream", Value: "yes"},
+	}
+	if got := m.frag.Sections[0].Entries; !reflect.DeepEqual(got, want) {
+		t.Errorf("entries =\n  %+v\nwant exactly one name and one tls (first wins)", got)
+	}
+}
+
 func TestRebuildSectionForwardSkipsForwardHost(t *testing.T) {
 	s := domain.Section{Kind: "forward-zone", Entries: []domain.Entry{
 		{Key: "forward-host", Value: "dns.example"},

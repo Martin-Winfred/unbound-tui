@@ -251,30 +251,62 @@ func (f SectionForm) View() string {
 // unmanaged entry keeps its relative order and position, so it ends up before
 // the appended managed block byte-identical. An empty name emits no name
 // entry; an empty boolean emits no boolean entry.
+//
+// Disabled is carried through so a specialize submit never silently re-enables
+// a disabled section: the regenerated name and booleans inherit the Disabled
+// flag of the first existing entry with the same key, and an address inherits
+// it only when an existing managed address has the identical value (changed
+// and newly added addresses are active).
 func rebuildSection(s *domain.Section, kind, name string, addrs []string, tlsUp, first string) {
 	addrKey, tlsKey, firstKey := sectionManagedKeys(kind)
 	managed := map[string]bool{
 		"name": true, addrKey: true, tlsKey: true, firstKey: true,
 	}
 
+	// Capture the pre-rebuild flags of the entries we are about to replace.
+	nameDisabled := false
+	nameSeen := false
+	boolDisabled := map[string]bool{} // tlsKey/firstKey -> first occurrence's flag
+	boolSeen := map[string]bool{}
+	addrDisabled := map[string]bool{} // addr value -> first matching entry's flag
+	addrSeen := map[string]bool{}
+
 	kept := make([]domain.Entry, 0, len(s.Entries)+len(addrs)+3)
 	for _, e := range s.Entries {
-		if managed[e.Key] {
+		if !managed[e.Key] {
+			kept = append(kept, e)
 			continue
 		}
-		kept = append(kept, e)
+		switch e.Key {
+		case "name":
+			if !nameSeen {
+				nameDisabled = e.Disabled
+				nameSeen = true
+			}
+		case addrKey:
+			if !addrSeen[e.Value] {
+				addrDisabled[e.Value] = e.Disabled
+				addrSeen[e.Value] = true
+			}
+		default: // tlsKey, firstKey
+			if !boolSeen[e.Key] {
+				boolDisabled[e.Key] = e.Disabled
+				boolSeen[e.Key] = true
+			}
+		}
 	}
+
 	if name != "" {
-		kept = append(kept, domain.Entry{Key: "name", Value: name})
+		kept = append(kept, domain.Entry{Key: "name", Value: name, Disabled: nameDisabled})
 	}
 	for _, a := range addrs {
-		kept = append(kept, domain.Entry{Key: addrKey, Value: a})
+		kept = append(kept, domain.Entry{Key: addrKey, Value: a, Disabled: addrDisabled[a]})
 	}
 	if tlsUp != "" {
-		kept = append(kept, domain.Entry{Key: tlsKey, Value: tlsUp})
+		kept = append(kept, domain.Entry{Key: tlsKey, Value: tlsUp, Disabled: boolDisabled[tlsKey]})
 	}
 	if first != "" {
-		kept = append(kept, domain.Entry{Key: firstKey, Value: first})
+		kept = append(kept, domain.Entry{Key: firstKey, Value: first, Disabled: boolDisabled[firstKey]})
 	}
 	s.Entries = kept
 }

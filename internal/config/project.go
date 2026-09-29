@@ -136,12 +136,7 @@ func attachRecords(zs []zoneDecl, rs []recordDecl) []domain.Zone {
 			addZone(name, "transparent", r.disabled)
 		}
 		zone := byName[name]
-		rel := r.owner
-		if r.owner == zone.Name {
-			rel = "@"
-		} else {
-			rel = strings.TrimSuffix(r.owner, "."+zone.Name)
-		}
+		rel := relativeName(r.owner, zone.Name)
 		zone.Records = append(zone.Records, domain.Record{
 			Name:     rel,
 			RType:    r.rtype,
@@ -227,11 +222,32 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 	return owner, ttl, class, strings.ToUpper(rest[0]), strings.Join(rest[1:], " "), nil
 }
 
+// relativeName returns owner's name relative to zone while preserving the
+// owner's original spelling. DNS names fold case (RFC 4343), so the
+// owner/zone comparison ignores case; an owner equal to the zone becomes "@".
+func relativeName(owner, zone string) string {
+	lo, lz := strings.ToLower(owner), strings.ToLower(zone)
+	switch {
+	case lo == lz:
+		return "@"
+	case strings.HasSuffix(lo, "."+lz):
+		return owner[:len(owner)-len(zone)-1]
+	default:
+		return owner
+	}
+}
+
 // owningZoneName returns the longest declared zone that contains owner, or "".
+// Matching folds case per RFC 4343 while the returned name keeps the zone
+// entry's original spelling; the suffix must still fall on a label boundary
+// ("."+zone). This is the M5 semantic change from the byte-exact v0.1 behavior
+// that M2/M3 reviews had pinned.
 func owningZoneName(owner string, zoneNames []string) string {
+	lo := strings.ToLower(owner)
 	best := ""
 	for _, z := range zoneNames {
-		if owner == z || strings.HasSuffix(owner, "."+z) {
+		lz := strings.ToLower(z)
+		if lo == lz || strings.HasSuffix(lo, "."+lz) {
 			if len(z) > len(best) {
 				best = z
 			}

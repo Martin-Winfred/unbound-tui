@@ -118,10 +118,10 @@ local-zone: "aaa.example." transparent
 	}
 }
 
-// TestZonesFromFragmentCaseVariantOwnership pins v0.1 case-sensitive
-// ownership: zone matching is byte-exact, so an upper-case owner does NOT
-// attach to a lower-case declared zone. It springs an implicit transparent
-// zone of its own, exactly as v0.1's owningZoneName did.
+// TestZonesFromFragmentCaseVariantOwnership pins RFC 4343 case-insensitive
+// ownership: DNS names fold, so an upper-case owner attaches to a lower-case
+// declared zone. The relative name keeps the owner's original spelling and no
+// implicit zone is sprung.
 func TestZonesFromFragmentCaseVariantOwnership(t *testing.T) {
 	zones := project(t, `server:
 local-zone: "example.com." transparent
@@ -129,13 +129,79 @@ local-data: "WWW.EXAMPLE.COM. 300 IN A 192.0.2.1"
 `)
 	want := []domain.Zone{
 		{
-			Name: "WWW.EXAMPLE.COM.", Type: "transparent",
-			Records: []domain.Record{{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300}},
+			Name: "example.com.", Type: "transparent",
+			Records: []domain.Record{{Name: "WWW", RType: "A", Value: "192.0.2.1", TTL: 300}},
 		},
-		{Name: "example.com.", Type: "transparent"},
 	}
 	if !reflect.DeepEqual(zones, want) {
 		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
+	}
+}
+
+// TestZonesFromFragmentCaseInsensitiveOwnership exercises the case-folding
+// ownership matrix: mixed-case zone spellings, a case-variant apex folding to
+// "@", longest-suffix ordering under folding, and the label-boundary rule.
+func TestZonesFromFragmentCaseInsensitiveOwnership(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want []domain.Zone
+	}{
+		{
+			name: "mixed-case zone spelling",
+			src: `server:
+local-zone: "Example.COM." transparent
+local-data: "www.example.com. 300 IN A 192.0.2.1"`,
+			want: []domain.Zone{{
+				Name: "Example.COM.", Type: "transparent",
+				Records: []domain.Record{{Name: "www", RType: "A", Value: "192.0.2.1", TTL: 300}},
+			}},
+		},
+		{
+			name: "case-variant apex folds to at-sign",
+			src: `server:
+local-zone: "example.com." transparent
+local-data: "EXAMPLE.COM. 300 IN A 192.0.2.1"`,
+			want: []domain.Zone{{
+				Name: "example.com.", Type: "transparent",
+				Records: []domain.Record{{Name: "@", RType: "A", Value: "192.0.2.1", TTL: 300}},
+			}},
+		},
+		{
+			name: "longest suffix folds case",
+			src: `server:
+local-zone: "example.com." transparent
+local-zone: "b.EXAMPLE.com." transparent
+local-data: "a.B.example.COM. 300 IN A 192.0.2.5"`,
+			want: []domain.Zone{
+				{
+					Name: "b.EXAMPLE.com.", Type: "transparent",
+					Records: []domain.Record{{Name: "a", RType: "A", Value: "192.0.2.5", TTL: 300}},
+				},
+				{Name: "example.com.", Type: "transparent"},
+			},
+		},
+		{
+			name: "folding respects label boundary",
+			src: `server:
+local-zone: "example.com." transparent
+local-data: "xexample.com. 300 IN A 192.0.2.7"`,
+			want: []domain.Zone{
+				{Name: "example.com.", Type: "transparent"},
+				{
+					Name: "xexample.com.", Type: "transparent",
+					Records: []domain.Record{{Name: "@", RType: "A", Value: "192.0.2.7", TTL: 300}},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zones := project(t, tt.src)
+			if !reflect.DeepEqual(zones, tt.want) {
+				t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, tt.want)
+			}
+		})
 	}
 }
 

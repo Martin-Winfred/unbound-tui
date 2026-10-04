@@ -1,6 +1,10 @@
 package domain
 
-import "testing"
+import (
+	"slices"
+	"sort"
+	"testing"
+)
 
 func TestNormalizeName(t *testing.T) {
 	tests := []struct {
@@ -71,5 +75,26 @@ func TestIsZoneTypeName(t *testing.T) {
 	// would slip past every per-type assertion.
 	if got, want := len(zoneTypes), len(canonicalZoneTypes); got != want {
 		t.Errorf("zoneTypes has %d entries, want %d (the canonical set)", got, want)
+	}
+}
+
+// TestZoneTypeNames pins the picker list to the canonical set: same values,
+// sorted, and every one accepted by IsZoneTypeName.
+func TestZoneTypeNames(t *testing.T) {
+	got := ZoneTypeNames()
+	want := append([]string(nil), canonicalZoneTypes...)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("ZoneTypeNames() = %v, want %v", got, want)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1] >= got[i] {
+			t.Fatalf("ZoneTypeNames() not strictly sorted at %d: %q >= %q", i, got[i-1], got[i])
+		}
+	}
+	for _, typ := range got {
+		if !IsZoneTypeName(typ) {
+			t.Errorf("IsZoneTypeName(%q) = false for a listed type", typ)
+		}
 	}
 }

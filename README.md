@@ -76,6 +76,13 @@ Local data view and Config view:
 | `w` | apply | apply |
 | `q` / `ctrl+c` | quit (confirms unsaved changes) | quit (confirms unsaved changes) |
 
+`Type` fields in the New zone, New record and Change zone type forms open a
+searchable picker: `enter` opens it, typing filters the list, `↑`/`↓` move the
+highlight, `enter`/`tab` pick the value, and `esc` closes the picker keeping the
+previous value. Choose the type first and the Value placeholder shows that
+type's format (for example `10 mail.example.com` for MX). Submit these forms
+with `ctrl+s`; `enter` still submits from a plain last field such as TTL.
+
 Foreign view (opened with `f`):
 
 | Key | Action |

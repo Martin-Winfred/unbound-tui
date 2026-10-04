@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // NormalizeName returns the normalized identity spelling of a directive value:
 // the value with surrounding whitespace trimmed and exactly one leading and
@@ -34,3 +37,16 @@ var zoneTypes = map[string]bool{
 
 // IsZoneTypeName reports whether t is a known local-zone type name.
 func IsZoneTypeName(t string) bool { return zoneTypes[t] }
+
+// ZoneTypeNames returns the canonical local-zone type names in sorted order.
+// It is the choice list behind the Type picker in the zone forms; the gate
+// itself stays IsZoneTypeName, so the list can never drift from what is
+// accepted.
+func ZoneTypeNames() []string {
+	out := make([]string, 0, len(zoneTypes))
+	for t := range zoneTypes {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}

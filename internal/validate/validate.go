@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,19 @@ var rtypeWhitelist = map[string]bool{
 	"MX": true, "TXT": true, "SRV": true, "NS": true,
 	// Note: CAA values contain quotes, which conflicts with injection
 	// defense; not supported for now (re-evaluate later if needed).
+}
+
+// RecordTypeNames returns the supported record types in sorted order. It is
+// the choice list behind the Type picker in the add-record form; the gate
+// itself stays rtypeWhitelist, so the list can never drift from what is
+// accepted.
+func RecordTypeNames() []string {
+	out := make([]string, 0, len(rtypeWhitelist))
+	for t := range rtypeWhitelist {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 const maxTTL = 604800 // 7 days

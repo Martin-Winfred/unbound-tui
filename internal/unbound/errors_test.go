@@ -42,32 +42,41 @@ func TestWrapErrorMapping(t *testing.T) {
 	})
 }
 
-// TestWrapErrorViaRun drives wrapError through run() with fake binaries so
-// that Detail is verified against the actually captured combined output.
+// TestWrapErrorViaRun drives wrapError through run() with fake binaries and
+// pins the separated-stream contract: Detail is the stderr text, falling back
+// to stdout only when stderr is empty, and never a mix of the two.
 func TestWrapErrorViaRun(t *testing.T) {
 	cases := []struct {
-		name     string
-		script   string
-		wantCode string
-		wantMsg  string
+		name       string
+		script     string
+		wantCode   string
+		wantMsg    string
+		wantDetail string
 	}{
 		{
 			"syntax error output",
 			`echo "error: syntax error in RR" >&2
 exit 1`,
-			ErrSyntax, "invalid RR data",
+			ErrSyntax, "invalid RR data", "error: syntax error in RR\n",
 		},
 		{
 			"permission denied output",
 			`echo "connect: permission denied" >&2
 exit 1`,
-			ErrPermission, "check control interface permissions",
+			ErrPermission, "check control interface permissions", "connect: permission denied\n",
 		},
 		{
-			"other nonzero output",
+			"other nonzero output falls back to stdout",
 			`echo "unbound is very unhappy"
 exit 1`,
-			ErrExit, "command exited with error",
+			ErrExit, "command exited with error", "unbound is very unhappy\n",
+		},
+		{
+			"stderr wins over stdout",
+			`echo "stdout noise"
+echo "real failure" >&2
+exit 1`,
+			ErrExit, "command exited with error", "real failure\n",
 		},
 	}
 	for _, tc := range cases {
@@ -75,7 +84,7 @@ exit 1`,
 			c := newTestClient(t)
 			fakeControl(t, t.TempDir(), tc.script)
 
-			out, err := c.run("", "local_data", "bogus")
+			_, err := c.run("", "local_data", "bogus")
 			if err == nil {
 				t.Fatal("run: expected error, got nil")
 			}
@@ -89,11 +98,33 @@ exit 1`,
 			if uberr.Message != tc.wantMsg {
 				t.Errorf("Message = %q, want %q", uberr.Message, tc.wantMsg)
 			}
-			if uberr.Detail != out {
-				t.Errorf("Detail = %q, want it to equal the captured output %q", uberr.Detail, out)
+			if uberr.Detail != tc.wantDetail {
+				t.Errorf("Detail = %q, want %q", uberr.Detail, tc.wantDetail)
 			}
 		})
 	}
+}
+
+// TestWrapErrorPreservesCause pins that the original exec error stays reachable
+// through errors.Is/As from the returned *UnboundError, in both the ExitError
+// and the non-ExitError branches.
+func TestWrapErrorPreservesCause(t *testing.T) {
+	t.Run("non-exit error", func(t *testing.T) {
+		sentinel := errors.New("i/o crash")
+		err := wrapError(sentinel, "")
+		if !errors.Is(err, sentinel) {
+			t.Errorf("errors.Is(err, sentinel) = false, want true; err = %v", err)
+		}
+	})
+
+	t.Run("exit error", func(t *testing.T) {
+		exitErr := &exec.ExitError{}
+		err := wrapError(exitErr, "syntax error in RR")
+		var got *exec.ExitError
+		if !errors.As(err, &got) || got != exitErr {
+			t.Errorf("errors.As(err, *exec.ExitError) did not reach the original cause; err = %v", err)
+		}
+	})
 }
 
 func TestUnboundErrorFormatting(t *testing.T) {

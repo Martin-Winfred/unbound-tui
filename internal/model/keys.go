@@ -18,7 +18,8 @@ package model
 //	w                  apply: write the fragment and reload Unbound
 //	c                  toggle between the Local data and Config views
 //	f                  toggle the read-only foreign view (with / to filter)
-//	q / ctrl+c         quit (asks first when there are unsaved changes)
+//	q                  quit (asks first when there are unsaved changes)
+//	ctrl+c             quit; also immediate from modal/apply states (Ready confirms)
 var keyMap = map[string]string{
 	"up":     actionUp,
 	"k":      actionUp,
@@ -42,8 +43,13 @@ var keyMap = map[string]string{
 	"c":      actionSwitchView,
 	"f":      actionForeign,
 	"q":      actionQuit,
-	"ctrl+c": actionQuit,
+	keyQuit:  actionQuit,
 }
+
+// keyQuit is the ctrl+c binding. It is also checked centrally in Update so it
+// quits immediately from the modal and apply states (which route or swallow
+// their own keys); StateReady keeps q's confirm-when-dirty flow.
+const keyQuit = "ctrl+c"
 
 const (
 	actionUp                = "up"

@@ -125,6 +125,23 @@ func TestViewForeignHelpMentionsUpstreams(t *testing.T) {
 	}
 }
 
+// TestViewFormHelpMentionsPicker pins the accurate StateForm help: enter opens
+// the picker on a choice field (the Type field), so the help must not claim
+// that enter always submits.
+func TestViewFormHelpMentionsPicker(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.width, m.height = 140, 30
+	m.state = StateForm
+	m.form = newZoneForm()
+	v := m.View()
+	if !strings.Contains(v, "enter pick/submit") {
+		t.Errorf("form View help missing the picker hint:\n%s", v)
+	}
+	if strings.Contains(v, "enter submit") {
+		t.Errorf("form View help still claims plain enter submit:\n%s", v)
+	}
+}
+
 func TestForeignFilterAndPaging(t *testing.T) {
 	var zones []domain.LocalZone
 	for i := 0; i < 20; i++ {

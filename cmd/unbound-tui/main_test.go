@@ -57,6 +57,31 @@ func TestBootWarnsWhenIncludeMissing(t *testing.T) {
 	}
 }
 
+func TestBootRejectsFragmentEqualToConfig(t *testing.T) {
+	dir := t.TempDir()
+	conf := writeFile(t, dir, "unbound.conf", "server:\n  verbosity: 1\n")
+	_, _, err := boot(conf, conf, io.Discard)
+	if err == nil {
+		t.Fatal("boot(fragment == config) = nil error, want refusal")
+	}
+	if !strings.Contains(err.Error(), "refusing") {
+		t.Errorf("error = %v, want an actionable refusal naming the main config", err)
+	}
+}
+
+func TestBootRejectsFragmentSymlinkToConfig(t *testing.T) {
+	dir := t.TempDir()
+	conf := writeFile(t, dir, "unbound.conf", "server:\n  verbosity: 1\n")
+	link := filepath.Join(dir, "frag-link.conf")
+	if err := os.Symlink(conf, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	_, _, err := boot(conf, link, io.Discard)
+	if err == nil {
+		t.Fatal("boot(symlink to config) = nil error, want refusal")
+	}
+}
+
 func TestRunRejectsBadFlag(t *testing.T) {
 	if err := run([]string{"-not-a-flag"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("run with a bad flag = nil error, want error")
@@ -70,6 +95,29 @@ func TestRunVersionFlag(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "unbound-tui") {
 		t.Errorf("version output = %q, want it to contain unbound-tui", out.String())
+	}
+}
+
+// TestRunHelpExitsCleanly pins that -h/-help is a successful request, not a
+// failure: the flag package reports it as flag.ErrHelp, which run must turn
+// into a nil error so main exits 0 after printing usage.
+func TestRunHelpExitsCleanly(t *testing.T) {
+	if err := run([]string{"-h"}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("run -h = %v, want nil (help is not an error)", err)
+	}
+}
+
+// TestRunRejectsStrayArgument pins that a positional argument is refused with
+// an actionable error naming it, instead of being silently ignored and booting
+// the TUI against the default config.
+func TestRunRejectsStrayArgument(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.conf")
+	err := run([]string{"-config", absent, "stray"}, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("run with a stray argument = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), "stray") {
+		t.Errorf("error = %v, want it to name the stray argument", err)
 	}
 }
 

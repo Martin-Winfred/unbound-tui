@@ -38,6 +38,75 @@ func TestNormalizeName(t *testing.T) {
 	}
 }
 
+// TestFoldName pins the ASCII-only RFC 4343 fold: only 'A'-'Z' map to 'a'-'z',
+// every other byte (including multi-byte non-ASCII runes) is left untouched,
+// and the result is byte-length preserving.
+func TestFoldName(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"already lower", "example.com", "example.com"},
+		{"mixed ASCII", "Example.COM", "example.com"},
+		{"digits and punctuation", "a-B_9.", "a-b_9."},
+		{"long s untouched", "\u017f", "\u017f"},
+		{"Kelvin sign untouched", "\u212a", "\u212a"},
+		{"dotted capital I untouched", "\u0130", "\u0130"},
+		{"non-ASCII byte then ASCII", "\u212aK", "\u212ak"},
+		{"ASCII then non-ASCII", "K\u017f", "k\u017f"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FoldName(tt.in)
+			if got != tt.want {
+				t.Errorf("FoldName(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if len(got) != len(tt.in) {
+				t.Errorf("FoldName(%q) changed byte length: %d -> %d", tt.in, len(tt.in), len(got))
+			}
+		})
+	}
+}
+
+// TestEqualName pins DNS identity comparison: ASCII folding (never Unicode) plus
+// at most one trailing dot ignored per side, with the root name "." kept
+// distinct from the empty name "".
+func TestEqualName(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"identical", "example.com", "example.com", true},
+		{"ascii case", "Example.COM", "example.com", true},
+		{"trailing dot on one side", "example.com.", "example.com", true},
+		{"trailing dot both sides", "example.com.", "example.com.", true},
+		{"case and trailing dot", "Example.COM", "example.com.", true},
+		{"root equals root", ".", ".", true},
+		{"root differs from empty", ".", "", false},
+		{"empty differs from root", "", ".", false},
+		{"empty equals empty", "", "", true},
+		{"long s does not fold to s", "\u017f", "s", false},
+		{"Kelvin sign does not fold to k", "\u212a", "k", false},
+		{"dotted capital I does not fold to i", "\u0130", "i", false},
+		{"different names", "a.example", "b.example", false},
+		{"only one trailing dot ignored", "example.com..", "example.com", false},
+		{"long s mixed case does not fold", "\u017f.example", "s.example", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EqualName(tt.a, tt.b); got != tt.want {
+				t.Errorf("EqualName(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+			if got := EqualName(tt.b, tt.a); got != tt.want {
+				t.Errorf("EqualName(%q, %q) = %v, want %v (symmetry)", tt.b, tt.a, got, tt.want)
+			}
+		})
+	}
+}
+
 // canonicalZoneTypes is the full unbound.conf(5) local-zone type set the tool
 // accepts. It mirrors the list moved into names.go; the literal here is
 // deliberate so a dropped or renamed entry fails this test.

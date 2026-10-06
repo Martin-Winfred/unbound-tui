@@ -27,11 +27,18 @@ go.work.sum
 # GoReleaser output
 /dist/
 
+# Local build output
+/unbound-tui
+/unbound-tui-linux-*
+
 # env file
 .env
 
 # Local design doc (kept out of version control by owner)
 /design.md
+
+# Local end-to-end testing recipe (host-specific; never committed)
+/docs/e2e-testing.local.md
 
 # SQLite artifacts of the legacy db-backed version (no longer produced)
 *.db

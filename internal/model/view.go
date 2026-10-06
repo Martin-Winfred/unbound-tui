@@ -2,7 +2,6 @@ package model
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -347,7 +346,7 @@ func (m RootModel) confirmMessage() string {
 func (m RootModel) helpText() string {
 	switch m.state {
 	case StateForm:
-		return "tab next · enter submit · esc cancel"
+		return "tab next · enter pick/submit · esc cancel"
 	case StateSectionForm:
 		return "esc cancel · tab next · ctrl+s apply"
 	case StateConfirm:
@@ -386,7 +385,7 @@ func (m RootModel) statusLine(w int) string {
 	} else {
 		segs = append(segs, th.ok.Render("saved"))
 	}
-	if os.Geteuid() != 0 {
+	if !m.isRoot {
 		segs = append(segs, th.dimStyle.Render("not root"))
 	}
 	return fit(strings.Join(segs, th.dimStyle.Render(" · ")), w)

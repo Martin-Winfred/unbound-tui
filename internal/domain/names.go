@@ -21,6 +21,41 @@ func NormalizeName(s string) string {
 	return s
 }
 
+// FoldName lowercases the ASCII bytes 'A'-'Z' and leaves every other byte
+// untouched. RFC 4343 folds case for ASCII only, and unlike strings.ToLower it
+// never changes a string's byte length, so a folded comparison cannot desync
+// from the original bytes (for example a non-ASCII rune that Unicode-folds to
+// a shorter ASCII string). This is the single ASCII-fold authority shared by
+// every layer that compares DNS names.
+func FoldName(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 'A' || c > 'Z' {
+			continue
+		}
+		if b == nil {
+			b = []byte(s)
+		}
+		b[i] = c + ('a' - 'A')
+	}
+	if b == nil {
+		return s
+	}
+	return string(b)
+}
+
+// EqualName reports whether a and b are the same DNS identity: each side is
+// ASCII-folded (RFC 4343) and at most one trailing root dot is ignored, then
+// the two are compared byte-exact. The root name "." is deliberately not equal
+// to the empty name "": root is a real zone, empty is the absence of one.
+func EqualName(a, b string) bool {
+	if a == "." || b == "." {
+		return a == b
+	}
+	return strings.TrimSuffix(FoldName(a), ".") == strings.TrimSuffix(FoldName(b), ".")
+}
+
 // zoneTypes is the canonical set of local-zone types accepted by the tool. It
 // mirrors unbound.conf(5); types outside it are rejected at input time. The
 // set lives here so config and validate share one list without importing each

@@ -210,7 +210,7 @@ func TestConfigCursorsClampOnSwitchFromLocalView(t *testing.T) {
 
 	// A Local-view mutation regenerates the fragment, inserting a server
 	// section at index 0; the section cursor now points at a shorter section.
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
 	if m.frag.Sections[0].Kind != "server" {
 		t.Fatalf("section 0 = %q, want server (inserted by regenLocal)", m.frag.Sections[0].Kind)
 	}
@@ -723,5 +723,51 @@ func TestConfigRefreshZonesSurfacesProjectionError(t *testing.T) {
 	m.refreshZones()
 	if m.state != StateError || m.lastError == nil {
 		t.Errorf("state/error = %v/%v, want StateError and a non-nil error", m.state, m.lastError)
+	}
+}
+
+// TestConfigRepairRestoresProjectionValid pins the single-writer contract for
+// m.zonesValid through a real Config-view edit: after a malformed local-* entry
+// left the projection invalid, an edit that replaces it with a valid value must
+// flip the flag back to true (via refreshZones), clear the error and let
+// Local-data editing run again. The edit is injected as a form submit rather
+// than through the locked-row key handler, so the test still exercises the
+// projection flag if the Config-view local-* lock invariant ever loosens.
+func TestConfigRepairRestoresProjectionValid(t *testing.T) {
+	m, _ := newTestModel(t)
+	m.frag = domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." static`},
+			{Key: "local-data", Value: `"unterminated`},
+		}},
+	}}
+	m.refreshZones() // the failure path a Config-view mutation takes
+	if m.zonesValid {
+		t.Fatal("zonesValid = true after a failed projection, want false")
+	}
+	if m.zones != nil {
+		t.Fatalf("zones = %+v, want nil after a failed projection", m.zones)
+	}
+	if m.state != StateError {
+		t.Fatalf("state = %v, want StateError after a failed projection", m.state)
+	}
+
+	// A Config edit replaces the malformed entry; the re-projection must mark
+	// the flag valid again.
+	m = submitInFormState(t, m, ConfigFormSubmitMsg{
+		Mode: FormEditEntry, SecIndex: 0, EntIndex: 1,
+		Key: "local-data", Value: `"www.example.com. 300 IN A 192.0.2.1"`,
+	})
+	if !m.zonesValid {
+		t.Error("zonesValid = false after the repair edit, want true")
+	}
+	if len(m.zones) != 1 || len(m.zones[0].Records) != 1 {
+		t.Fatalf("zones = %+v, want the repaired example.com. zone with one record", m.zones)
+	}
+
+	// Local editing is allowed again (the guards see a valid projection).
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "new.example", Type: "transparent"})
+	if len(m.zones) != 2 {
+		t.Errorf("zones = %+v, want the repaired plus the new zone", m.zones)
 	}
 }

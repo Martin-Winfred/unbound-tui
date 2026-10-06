@@ -144,6 +144,24 @@ func TestListLocalData(t *testing.T) {
 	}
 }
 
+// TestListLocalDataIgnoresStderr pins stream separation: a warning or
+// advisory that unbound-control writes to stderr must not masquerade as an RR
+// line. Only stdout is the list contract; stderr belongs to error Detail.
+func TestListLocalDataIgnoresStderr(t *testing.T) {
+	c := newTestClient(t)
+	fakeControl(t, t.TempDir(), `echo "warning: deprecated option" >&2
+echo "web.example.com. 3600 IN A 192.168.1.1"`)
+
+	got, err := c.ListLocalData()
+	if err != nil {
+		t.Fatalf("ListLocalData: %v", err)
+	}
+	want := []string{"web.example.com. 3600 IN A 192.168.1.1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("lines = %q, want %q (stderr warning must not appear)", got, want)
+	}
+}
+
 // TestListArgvShape verifies both list commands invoke unbound-control
 // as "-c <confPath> <subcommand>" (§4.4 (5): -c is the only config
 // mechanism; $3 is the subcommand).

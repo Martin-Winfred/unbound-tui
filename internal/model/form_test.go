@@ -182,8 +182,22 @@ func TestFormPickerOpensFiltersAndSelects(t *testing.T) {
 	if !f.pickerOpen {
 		t.Fatal("enter on the Type field did not open the picker")
 	}
-	if v := f.View(); !strings.Contains(v, "deny") {
-		t.Errorf("View = %q, want the option list", v)
+	// The picker highlights the field's current value ("transparent", index 19
+	// in the sorted 21-type list), so the 8-row window covers indices 12-19.
+	// Assert that exact window instead of a substring: the old
+	// strings.Contains(v, "deny") check was vacuously satisfied by
+	// "inform_deny" and would still pass if the list never rendered.
+	wantWindow := "" +
+		"    inform_deny\n" +
+		"    inform_redirect\n" +
+		"    nodefault\n" +
+		"    noview\n" +
+		"    redirect\n" +
+		"    refuse\n" +
+		"    static\n" +
+		"  > transparent\n"
+	if got := f.pickerList(); got != wantWindow {
+		t.Errorf("pickerList() = %q, want the exact window %q", got, wantWindow)
 	}
 
 	for _, r := range "stat" {
@@ -208,6 +222,83 @@ func TestFormPickerOpensFiltersAndSelects(t *testing.T) {
 	msg, ok := cmd().(FormSubmitMsg)
 	if !ok || msg.Mode != FormAddZone || msg.Type != "static" {
 		t.Fatalf("submit msg = %+v", cmd())
+	}
+}
+
+// TestFormPickerWindowAndPaging pins the picker's paging keys and windowing on
+// a list longer than the 8-row viewport (the 21 zone types): ctrl+u/ctrl+d move
+// the highlight by a page, both clamp at the ends of the list, and the visible
+// window follows the highlight showing exactly pickerRows options.
+func TestFormPickerWindowAndPaging(t *testing.T) {
+	f := newZoneForm()
+	f, _ = f.Update(key("tab"))
+	f, _ = f.Update(key("enter"))
+	if !f.pickerOpen {
+		t.Fatal("picker did not open")
+	}
+
+	// The form pre-highlights "transparent" (sorted index 19); ctrl+u walks the
+	// highlight up a page at a time (19 -> 11 -> 3 -> 0) and clamps on the first
+	// option.
+	for i, want := range []int{11, 3, 0, 0} {
+		f, _ = f.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+		if f.pickerCursor != want {
+			t.Fatalf("ctrl+u #%d: cursor = %d, want %d", i+1, f.pickerCursor, want)
+		}
+	}
+	wantTop := "" +
+		"  > always_deny\n" +
+		"    always_nodata\n" +
+		"    always_null\n" +
+		"    always_nxdomain\n" +
+		"    always_refuse\n" +
+		"    always_transparent\n" +
+		"    block_a\n" +
+		"    block_a_wdata\n"
+	if got := f.pickerList(); got != wantTop {
+		t.Fatalf("top pickerList() = %q, want %q", got, wantTop)
+	}
+	if strings.Contains(f.pickerList(), "block_aaaa") {
+		// block_aaaa is option 8, just past the 8-row window at cursor 0.
+		t.Errorf("first window leaked an off-screen option: %q", f.pickerList())
+	}
+
+	// ctrl+d pages down by 8 (0 -> 8 -> 16 -> 20) and clamps on the last option.
+	for i, want := range []int{8, 16, 20, 20} {
+		f, _ = f.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+		if f.pickerCursor != want {
+			t.Fatalf("ctrl+d #%d: cursor = %d, want %d", i+1, f.pickerCursor, want)
+		}
+	}
+	wantBottom := "" +
+		"    inform_redirect\n" +
+		"    nodefault\n" +
+		"    noview\n" +
+		"    redirect\n" +
+		"    refuse\n" +
+		"    static\n" +
+		"    transparent\n" +
+		"  > typetransparent\n"
+	if got := f.pickerList(); got != wantBottom {
+		t.Fatalf("bottom pickerList() = %q, want %q", got, wantBottom)
+	}
+}
+
+// TestFormPickerFilterCaseInsensitive pins the filter's case folding and
+// whitespace trimming (pickerShown): the query and options are lowercased, so
+// both "DENY" and " deny " match the deny-family options even though every
+// option is spelled in lower case.
+func TestFormPickerFilterCaseInsensitive(t *testing.T) {
+	f := newTypeForm(0, domain.Zone{Name: "example.com.", Type: "transparent"})
+	f, _ = f.Update(key("enter"))
+	if !f.pickerOpen {
+		t.Fatal("picker did not open")
+	}
+	for _, q := range []string{"DENY", " deny "} {
+		f.inputs[0].SetValue(q)
+		if got := strings.Join(f.pickerShown(), ","); got != "always_deny,deny,inform_deny" {
+			t.Errorf("pickerShown(%q) = %q, want always_deny,deny,inform_deny", q, got)
+		}
 	}
 }
 

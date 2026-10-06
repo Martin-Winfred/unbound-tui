@@ -44,9 +44,9 @@ func (c *Client) run(stdin string, args ...string) (string, error) {
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start unbound-control: %w", err)
@@ -60,9 +60,16 @@ func (c *Client) run(stdin string, args ...string) (string, error) {
 	select {
 	case err := <-done:
 		if err != nil {
-			return buf.String(), wrapError(err, buf.String())
+			// Only stderr is the error detail: stdout may carry partial list
+			// rows, and mixing the streams would let a warning masquerade as
+			// data. Fall back to stdout when the command failed silently.
+			detail := stderr.String()
+			if detail == "" {
+				detail = stdout.String()
+			}
+			return stdout.String(), wrapError(err, detail)
 		}
-		return buf.String(), nil
+		return stdout.String(), nil
 	case <-time.After(c.timeout):
 		// Sanctioned suppression: after Kill there is nothing left to do;
 		// the waiter goroutine drains cmd.Wait's result into the buffered

@@ -192,19 +192,22 @@ func (m *RootModel) cfgPage(delta int) {
 const lockedNotice = "locked — edit local data in the Local data view"
 
 // refreshZones re-projects the zones model the Local data view renders from
-// frag. Projection is not total: a malformed local-* entry moves the model
-// into StateError loudly rather than being silently dropped, mirroring the
-// ZonesLoadedMsg handler.
+// frag, and is the single writer of m.zonesValid for Config-view mutations:
+// true on success, false on failure. Projection is not total: a malformed
+// local-* entry moves the model into StateError loudly rather than being
+// silently dropped, mirroring the ZonesLoadedMsg handler.
 func (m *RootModel) refreshZones() {
 	zs, err := config.ZonesFromFragment(m.frag)
 	if err != nil {
 		// Never leave a stale projection paired with the mutated fragment;
 		// the error state already blocks apply.
+		m.zonesValid = false
 		m.zones = nil
 		m.lastError = fmt.Errorf("project fragment: %w", err)
 		m.state = StateError
 		return
 	}
+	m.zonesValid = true
 	m.zones = zs
 	m.clampCursors()
 }

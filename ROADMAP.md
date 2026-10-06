@@ -79,21 +79,22 @@ directive we do not model is passed through verbatim.
 
 ## Cross-cutting
 
-- [ ] All validation goes through `internal/validate` (or a small dedicated
+- [x] All validation goes through `internal/validate` (or a small dedicated
       validator): the single pre-write gate.
-- [ ] Apply stays the same: validate -> atomic write of the fragment ->
+- [x] Apply stays the same: validate -> atomic write of the fragment ->
       `unbound-control reload`.
-- [ ] Actionable errors that name the offending section/entry.
+- [x] Actionable errors that name the offending section/entry.
 
 ## Testing
 
-- [ ] config: round-trip, unknown passthrough, disabled, quotes, duplicate
+- [x] config: round-trip, unknown passthrough, disabled, quotes, duplicate
       sections.
-- [ ] validate: value boundaries for each new directive.
-- [ ] model: section/entry add/edit/delete, specialized forms, conflict
+- [x] validate: value boundaries for each new directive.
+- [x] model: section/entry add/edit/delete, specialized forms, conflict
       prompts, view switching.
 - [ ] End-to-end on Debian: add a `forward-zone "."` with DoT, apply, and
-      verify via `unbound-control list_forwards`.
+      verify via `unbound-control list_forwards`. (Owner smoke on the test
+      host.)
 
 ---
 

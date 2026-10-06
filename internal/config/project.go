@@ -148,7 +148,7 @@ func attachRecords(zs []zoneDecl, rs []recordDecl) []domain.Zone {
 		name := owningZoneName(r.owner, order)
 		if name == "" {
 			name = r.owner
-			addZone(name, "transparent", r.disabled)
+			addZone(name, "transparent", false) // records carry their own disabled flag; the zone stays active
 		}
 		zone := byName[name]
 		rel := relativeName(r.owner, zone.Name)
@@ -197,6 +197,33 @@ func cutToken(s string) (token, rest string, err error) {
 	return fields[0], strings.TrimSpace(s[len(fields[0]):]), nil
 }
 
+// ttlToken classifies a TTL-position token. A token that begins with an ASCII
+// digit must be a plain integer number of seconds; a unit suffix such as "2H"
+// is rejected rather than silently falling back to the 3600 default. A token
+// starting with "+" or "-" followed by a digit is also a TTL-position token,
+// but strconv.Atoi would accept it (and a negative TTL is meaningless), so it
+// is rejected the same way rather than silently read as a class/record type.
+// Any other token is not a TTL — it is a class or record type handled by the
+// caller — so it reports present=false with no error.
+func ttlToken(tok string) (ttl int, present bool, err error) {
+	if tok == "" {
+		return 0, false, nil
+	}
+	digit := func(b byte) bool { return b >= '0' && b <= '9' }
+	signed := len(tok) >= 2 && (tok[0] == '+' || tok[0] == '-') && digit(tok[1])
+	if !digit(tok[0]) && !signed {
+		return 0, false, nil
+	}
+	if signed {
+		return 0, false, fmt.Errorf("unsupported TTL %q (use plain seconds)", tok)
+	}
+	n, e := strconv.Atoi(tok)
+	if e != nil {
+		return 0, false, fmt.Errorf("unsupported TTL %q (use plain seconds)", tok)
+	}
+	return n, true, nil
+}
+
 // parseRR parses one zonefile RR: `owner [ttl] [class] type rdata`.
 func parseRR(line string) (owner string, ttl int, class, rtype, value string, err error) {
 	fields := strings.Fields(line)
@@ -209,7 +236,11 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 	switch {
 	case len(rest) >= 2 && strings.EqualFold(rest[1], "IN"):
 		// owner ttl IN type rdata
-		if t, e := strconv.Atoi(rest[0]); e == nil {
+		t, ok, e := ttlToken(rest[0])
+		if e != nil {
+			return "", 0, "", "", "", e
+		}
+		if ok {
 			ttl = t
 		}
 		class = rest[1]
@@ -219,14 +250,22 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 		class = rest[0]
 		rest = rest[1:]
 		if len(rest) >= 2 {
-			if t, e := strconv.Atoi(rest[0]); e == nil {
+			t, ok, e := ttlToken(rest[0])
+			if e != nil {
+				return "", 0, "", "", "", e
+			}
+			if ok {
 				ttl = t
 				rest = rest[1:]
 			}
 		}
 	default:
 		// owner [ttl] type rdata
-		if t, e := strconv.Atoi(rest[0]); e == nil {
+		t, ok, e := ttlToken(rest[0])
+		if e != nil {
+			return "", 0, "", "", "", e
+		}
+		if ok {
 			ttl = t
 			rest = rest[1:]
 		}
@@ -237,36 +276,20 @@ func parseRR(line string) (owner string, ttl int, class, rtype, value string, er
 	return owner, ttl, class, strings.ToUpper(rest[0]), strings.Join(rest[1:], " "), nil
 }
 
-// asciiLower lowercases the ASCII bytes 'A'-'Z' and leaves every other byte
-// untouched. RFC 4343 folds case for ASCII only, and unlike strings.ToLower it
-// never changes a string's byte length, so a folded suffix match cannot desync
-// from the original strings used to derive a record's relative name.
-func asciiLower(s string) string {
-	var b []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < 'A' || c > 'Z' {
-			continue
-		}
-		if b == nil {
-			b = []byte(s)
-		}
-		b[i] = c + ('a' - 'A')
-	}
-	if b == nil {
-		return s
-	}
-	return string(b)
-}
-
 // relativeName returns owner's name relative to zone while preserving the
 // owner's original spelling. DNS names fold case (RFC 4343), so the
 // owner/zone comparison ignores case; an owner equal to the zone becomes "@".
 func relativeName(owner, zone string) string {
-	lo, lz := asciiLower(owner), asciiLower(zone)
+	lo, lz := domain.FoldName(owner), domain.FoldName(zone)
 	switch {
 	case lo == lz:
 		return "@"
+	case lz == ".":
+		// Root owns every name; the record is named relative to the root by
+		// dropping the owner's trailing root dot. This case is explicit so the
+		// root never reaches the "."+lz suffix branch, whose ".." suffix is
+		// not a label boundary.
+		return strings.TrimSuffix(owner, ".")
 	case strings.HasSuffix(lo, "."+lz):
 		return owner[:len(owner)-len(zone)-1]
 	default:
@@ -280,11 +303,15 @@ func relativeName(owner, zone string) string {
 // ("."+zone). This is the M5 semantic change from the byte-exact v0.1 behavior
 // that M2/M3 reviews had pinned.
 func owningZoneName(owner string, zoneNames []string) string {
-	lo := asciiLower(owner)
+	lo := domain.FoldName(owner)
 	best := ""
 	for _, z := range zoneNames {
-		lz := asciiLower(z)
-		if lo == lz || strings.HasSuffix(lo, "."+lz) {
+		lz := domain.FoldName(z)
+		// The root zone contains every owner; the "."+lz suffix test below
+		// cannot express it ("." + "." == ".." is never a real label
+		// boundary), so match it directly. The longest-zone-wins comparison
+		// still prefers any more specific declared zone over the root.
+		if lz == "." || lo == lz || strings.HasSuffix(lo, "."+lz) {
 			// Strict > keeps the first declaration on an equal-length tie, so case-variant duplicate zones resolve deterministically.
 			if len(z) > len(best) {
 				best = z

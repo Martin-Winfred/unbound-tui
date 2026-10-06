@@ -16,6 +16,51 @@ func TestFQDN(t *testing.T) {
 	}
 }
 
+// TestRRStringRootZone pins rendering of records owned by the root zone ".":
+// a relative owner is FQDN-qualified directly (never through the zone), and the
+// apex renders as the root itself. Before the fix the concatenation produced
+// the doubled dot "example.com.." for a root-owned relative name.
+func TestRRStringRootZone(t *testing.T) {
+	tests := []struct {
+		name string
+		zone string
+		rec  Record
+		want string
+	}{
+		{
+			name: "relative name under root",
+			zone: ".",
+			rec:  Record{Name: "example.com", RType: "A", Value: "1.2.3.4", TTL: 300},
+			want: "example.com. 300 IN A 1.2.3.4",
+		},
+		{
+			name: "root apex via empty name",
+			zone: ".",
+			rec:  Record{Name: "", RType: "A", Value: "1.2.3.4", TTL: 300},
+			want: ". 300 IN A 1.2.3.4",
+		},
+		{
+			name: "root apex via at-sign",
+			zone: ".",
+			rec:  Record{Name: "@", RType: "A", Value: "1.2.3.4", TTL: 300},
+			want: ". 300 IN A 1.2.3.4",
+		},
+		{
+			name: "normal zone still concatenates",
+			zone: "example.com.",
+			rec:  Record{Name: "www", RType: "A", Value: "1.2.3.4", TTL: 300},
+			want: "www.example.com. 300 IN A 1.2.3.4",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RRString(tt.zone, tt.rec); got != tt.want {
+				t.Errorf("RRString(%q, %+v) = %q, want %q", tt.zone, tt.rec, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRRString(t *testing.T) {
 	tests := []struct {
 		name string

@@ -6,6 +6,7 @@ package model
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -42,10 +43,23 @@ type RootModel struct {
 	recCursor   int
 	zoneFocused bool
 
+	// zonesValid is true only when the current frag has projected successfully
+	// in this session. refreshZones is the single writer for mutations (true on
+	// a successful projection, false on failure); the initial ZonesLoadedMsg
+	// handler sets it for the first projection. A failed projection leaves
+	// zones empty while frag stays intact; without this guard a later
+	// Local-data edit would regen() from the empty projection and silently
+	// drop every local-zone/local-data entry.
+	zonesValid bool
+
 	dirty     bool
 	state     AppState
 	lastError error
 	notice    string
+
+	// isRoot caches os.Geteuid()==0 once at construction; statusLine must not
+	// syscall on every frame.
+	isRoot bool
 
 	form    RecordForm
 	cfgForm configFormCtx // target of the active Config-view form
@@ -77,7 +91,7 @@ type RootModel struct {
 // starts focused. version is shown in the title.
 func NewRootModel(ctl domain.Controller, cfg *config.Manager, version string) RootModel {
 	return RootModel{ctl: ctl, cfg: cfg, version: version, state: StateReady,
-		zoneFocused: true, cfgView: ConfigViewModel{SecFocused: true}}
+		isRoot: os.Geteuid() == 0, zoneFocused: true, cfgView: ConfigViewModel{SecFocused: true}}
 }
 
 // Init loads the generic fragment model from disk. It also snapshots the
@@ -104,6 +118,14 @@ func (m RootModel) Init() tea.Cmd {
 func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// ctrl+c is a hard quit from every state except Ready. The modal
+		// forms and StateApplying route or swallow their own keys, so this
+		// check must precede (and stay outside) the per-state dispatch below.
+		// Ready is excluded so ctrl+c keeps q's behavior there: quit when
+		// clean, confirm when dirty.
+		if m.state != StateReady && msg.String() == keyQuit {
+			return m, tea.Quit
+		}
 		m.notice = ""
 		switch m.state {
 		case StateConfirm:
@@ -138,9 +160,12 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		zones, err := config.ZonesFromFragment(msg.Fragment)
 		if err != nil {
 			// Projection can fail on malformed local-* entries; surface it
-			// loudly through the normal error path, never silently.
+			// loudly through the normal error path, never silently. The
+			// empty zones it leaves behind are not safe to regen from.
+			m.zonesValid = false
 			return m, func() tea.Msg { return ErrorMsg{fmt.Errorf("project fragment: %w", err)} }
 		}
+		m.zonesValid = true
 		m.zones = zones
 		m.clampCursors()
 		// The projection skips empty-name local-zone entries; surface that
@@ -158,6 +183,8 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ForeignLoadedMsg:
+		// newForeignModel resets the in-flight loading flag, on both the
+		// success and the error result (msg.Err != nil).
 		m.foreign = newForeignModel(msg.Zones, msg.RRs, msg.Err)
 		m.foreign.setUpstreams(msg.Upstreams, msg.UpErr)
 		// A successful fetch is fresher than the Init snapshot, so backfill the
@@ -171,18 +198,42 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case FormCancelMsg:
+		// Only a form that is actually open may be cancelled. A cancel that
+		// arrives late (after the form already closed or after an apply
+		// started) must not clear an unrelated form or force StateReady.
+		if m.state != StateForm && m.state != StateSectionForm {
+			return m, nil
+		}
 		m.form = RecordForm{}
 		m.secForm = SectionForm{}
 		m.state = StateReady
 		return m, nil
 
 	case FormSubmitMsg:
+		// Honor the submit only while its zones-view form is the active
+		// state: a submit already in flight when the user cancels, or a
+		// duplicate arriving after apply started, is ignored completely.
+		if m.state != StateForm {
+			return m, nil
+		}
 		return m.applyForm(msg)
 
 	case ConfigFormSubmitMsg:
+		// Config-view forms live in StateForm too; anything else (cancel to
+		// Ready, the A-chain's StateSectionForm, StateApplying, StateError)
+		// drops the message.
+		if m.state != StateForm {
+			return m, nil
+		}
 		return m.applyConfigForm(msg)
 
 	case SectionFormSubmitMsg:
+		// The specialized form owns StateSectionForm; a late submit after
+		// cancel/apply or a projection error is ignored (and the error is
+		// preserved by not touching the model).
+		if m.state != StateSectionForm {
+			return m, nil
+		}
 		return m.applySectionForm(msg)
 
 	case ForeignCloseMsg:
@@ -197,6 +248,9 @@ func (m RootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ErrorMsg:
 		m.lastError = msg.Error
 		m.state = StateError
+		// A generic error can also end a fetch; never leave the foreign view
+		// stuck on its loading placeholder.
+		m.foreign.loading = false
 		return m, nil
 	}
 	return m, nil
@@ -386,8 +440,19 @@ func (m RootModel) handleConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// projectionFailedNotice is the actionable status-bar message shown when a
+// Local-data mutation is refused because the fragment's local-* entries did not
+// project. Shared by applyForm, deleteZone and deleteRecord.
+const projectionFailedNotice = "local data unavailable: fix the malformed local-* entry in the fragment, then restart"
+
 // applyForm folds a validated form submission into the in-memory model.
 func (m RootModel) applyForm(msg FormSubmitMsg) (tea.Model, tea.Cmd) {
+	if !m.zonesValid {
+		// regen() folds the (empty) projection back into frag, which would
+		// strip every local-zone/local-data. Refuse before touching either.
+		m.notice = projectionFailedNotice
+		return m, nil
+	}
 	m.form = RecordForm{}
 	m.state = StateReady
 	switch msg.Mode {
@@ -400,27 +465,38 @@ func (m RootModel) applyForm(msg FormSubmitMsg) (tea.Model, tea.Cmd) {
 		}
 		m.zones = append(m.zones, domain.Zone{Name: name, Type: msg.Type})
 		sort.SliceStable(m.zones, func(i, j int) bool { return m.zones[i].Name < m.zones[j].Name })
+		// Follow the zone just created so the next action targets it.
+		for i, z := range m.zones {
+			if z.Name == name {
+				m.zoneCursor = i
+				break
+			}
+		}
+		m.recCursor = 0
 	case FormAddRecord:
-		if msg.ZoneIndex >= 0 && msg.ZoneIndex < len(m.zones) {
-			rec := domain.Record{Name: msg.Name, RType: msg.Type, Value: msg.Value, TTL: msg.TTL}
-			if hasRecord(m.zones[msg.ZoneIndex].Records, rec) {
-				m.lastError = fmt.Errorf("record %s %s %s already exists in %s",
-					msg.Name, msg.Type, msg.Value, m.zones[msg.ZoneIndex].Name)
-				m.state = StateError
-				return m, nil
-			}
-			m.zones[msg.ZoneIndex].Records = append(m.zones[msg.ZoneIndex].Records, rec)
+		if msg.ZoneIndex < 0 || msg.ZoneIndex >= len(m.zones) {
+			return m, nil
 		}
+		rec := domain.Record{Name: msg.Name, RType: msg.Type, Value: msg.Value, TTL: msg.TTL}
+		if hasRecord(m.zones[msg.ZoneIndex].Records, rec) {
+			m.lastError = fmt.Errorf("record %s %s %s already exists in %s",
+				msg.Name, msg.Type, msg.Value, m.zones[msg.ZoneIndex].Name)
+			m.state = StateError
+			return m, nil
+		}
+		m.zones[msg.ZoneIndex].Records = append(m.zones[msg.ZoneIndex].Records, rec)
 	case FormEditTTL:
-		if z, ok := m.zoneAt(msg.ZoneIndex); ok {
-			if msg.RecIndex >= 0 && msg.RecIndex < len(m.zones[z].Records) {
-				m.zones[z].Records[msg.RecIndex].TTL = msg.TTL
-			}
+		z, ok := m.zoneAt(msg.ZoneIndex)
+		if !ok || msg.RecIndex < 0 || msg.RecIndex >= len(m.zones[z].Records) {
+			return m, nil
 		}
+		m.zones[z].Records[msg.RecIndex].TTL = msg.TTL
 	case FormSetType:
-		if z, ok := m.zoneAt(msg.ZoneIndex); ok {
-			m.zones[z].Type = msg.Type
+		z, ok := m.zoneAt(msg.ZoneIndex)
+		if !ok {
+			return m, nil
 		}
+		m.zones[z].Type = msg.Type
 	}
 	m.regen()
 	m.dirty = true
@@ -432,7 +508,9 @@ func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 	ctl := m.ctl
 	cfg := m.cfg
 	m.state = StateForeign
-	m.foreign = ForeignModel{}
+	// Mark the fetch as in flight so the view shows a loading placeholder
+	// instead of the terminal "None" message until the result arrives.
+	m.foreign = ForeignModel{loading: true}
 	return m, func() tea.Msg {
 		rtZones, err := ctl.ListLocalZones()
 		if err != nil {
@@ -463,8 +541,15 @@ func (m RootModel) requestForeign() (tea.Model, tea.Cmd) {
 // Unbound. It runs as a tea.Cmd because reload can block. The fragment is
 // already in sync with the zone model (regenLocal runs on every edit).
 func (m RootModel) apply() tea.Cmd {
+	if !m.zonesValid {
+		// Refuse before any file write: zones is empty because the fragment
+		// failed to project, so writing it would drop local DNS data.
+		return func() tea.Msg {
+			return ErrorMsg{fmt.Errorf("cannot apply: local data was not loaded (fix the malformed local-* entry in the fragment)")}
+		}
+	}
 	zones := cloneZones(m.zones)
-	frag := m.frag
+	frag := cloneFragment(m.frag)
 	cfg := m.cfg
 	ctl := m.ctl
 	return func() tea.Msg {
@@ -495,6 +580,12 @@ func (m RootModel) apply() tea.Cmd {
 			}
 			return ErrorMsg{fmt.Errorf("cannot apply, conflicts with the include graph: %s", strings.Join(lines, "; "))}
 		}
+		// Refuse before writing or reloading when the main config does not
+		// include our fragment: otherwise Unbound would reload the old
+		// configuration while the UI reports success.
+		if err := cfg.CheckInclude(); err != nil {
+			return ErrorMsg{fmt.Errorf("apply blocked: %w", flattenError(err))}
+		}
 		if err := cfg.WriteFragment(frag); err != nil {
 			return ErrorMsg{fmt.Errorf("write fragment: %w", err)}
 		}
@@ -503,6 +594,29 @@ func (m RootModel) apply() tea.Cmd {
 		}
 		return AppliedMsg{}
 	}
+}
+
+// flatError flattens an inner error's message onto a single line. The status
+// bar renders one row and does not split embedded newlines (a multi-line
+// ConfigError would hide everything after the first line), while Unwrap keeps
+// errors.Is/errors.As working for the underlying error.
+type flatError struct {
+	inner error
+}
+
+func (e flatError) Error() string {
+	return strings.ReplaceAll(e.inner.Error(), "\n", "; ")
+}
+
+func (e flatError) Unwrap() error { return e.inner }
+
+// flattenError wraps err so its rendered message is single-line; it returns nil
+// unchanged so a nil error never becomes non-nil.
+func flattenError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return flatError{inner: err}
 }
 
 // --- in-memory mutations (all synchronous, all set dirty) ---
@@ -599,6 +713,12 @@ func (m *RootModel) movePageUp() {
 }
 
 func (m *RootModel) toggleDisabled() {
+	if !m.zonesValid {
+		// regen() folds the (empty) projection back into frag, which would
+		// strip every local-zone/local-data. Refuse before touching either.
+		m.notice = projectionFailedNotice
+		return
+	}
 	if m.zoneFocused {
 		z, ok := m.zoneAt(m.zoneCursor)
 		if !ok {
@@ -623,6 +743,10 @@ func (m *RootModel) toggleDisabled() {
 }
 
 func (m *RootModel) deleteZone(index int) {
+	if !m.zonesValid {
+		m.notice = projectionFailedNotice
+		return
+	}
 	z, ok := m.zoneAt(index)
 	if !ok {
 		return
@@ -634,6 +758,10 @@ func (m *RootModel) deleteZone(index int) {
 }
 
 func (m *RootModel) deleteRecord(zoneIndex, recIndex int) {
+	if !m.zonesValid {
+		m.notice = projectionFailedNotice
+		return
+	}
 	z, ok := m.zoneAt(zoneIndex)
 	if !ok || recIndex < 0 || recIndex >= len(m.zones[z].Records) {
 		return
@@ -703,6 +831,20 @@ func cloneZones(zones []domain.Zone) []domain.Zone {
 	return out
 }
 
+// cloneFragment returns a deep copy of f so the background apply command reads
+// immutable memory: later UI handlers that mutate a section or entry element in
+// place (configform/configview/sectionform) must not change what apply validates
+// or writes. Entry holds only value types, so copying the Sections and each
+// Entries slice detaches every field.
+func cloneFragment(f domain.Fragment) domain.Fragment {
+	out := domain.Fragment{Sections: make([]domain.Section, len(f.Sections))}
+	for i, s := range f.Sections {
+		out.Sections[i] = s
+		out.Sections[i].Entries = append([]domain.Entry(nil), s.Entries...)
+	}
+	return out
+}
+
 // validateModel validates every zone and record, and rejects duplicates,
 // before any write.
 func validateModel(zones []domain.Zone) error {
@@ -714,7 +856,7 @@ func validateModel(zones []domain.Zone) error {
 		if !config.IsZoneTypeName(z.Type) {
 			return fmt.Errorf("zone %q: unsupported type %q", z.Name, z.Type)
 		}
-		zk := strings.ToLower(domain.FQDN(z.Name))
+		zk := domain.FoldName(domain.FQDN(z.Name))
 		if seenZones[zk] {
 			return fmt.Errorf("duplicate zone %q", z.Name)
 		}
@@ -738,7 +880,7 @@ func validateModel(zones []domain.Zone) error {
 // recordKey is the identity used for duplicate detection: DNS names and types
 // are case-insensitive and the apex is spelled "" or "@".
 func recordKey(zone string, r domain.Record) string {
-	return strings.ToLower(domain.FQDN(zone)) + "|" + recordName(r.Name) + "|" +
+	return domain.FoldName(domain.FQDN(zone)) + "|" + recordName(r.Name) + "|" +
 		strings.ToUpper(r.RType) + "|" + r.Value
 }
 
@@ -746,7 +888,7 @@ func recordName(name string) string {
 	if name == "" || name == "@" {
 		return "@"
 	}
-	return strings.ToLower(name)
+	return domain.FoldName(name)
 }
 
 func recordLabel(r domain.Record) string {
@@ -774,9 +916,8 @@ func hasEmptyNameLocalZone(f domain.Fragment) bool {
 
 // hasZone reports whether a zone with the same (case-insensitive) name exists.
 func (m RootModel) hasZone(name string) bool {
-	want := strings.ToLower(domain.FQDN(name))
 	for _, z := range m.zones {
-		if strings.ToLower(domain.FQDN(z.Name)) == want {
+		if domain.EqualName(name, z.Name) {
 			return true
 		}
 	}

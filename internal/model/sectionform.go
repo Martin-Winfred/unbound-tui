@@ -170,7 +170,7 @@ func (f SectionForm) submit() (SectionForm, tea.Cmd) {
 		f.err = errors.New(`name is required — use "." for the root zone`)
 		return f, nil
 	}
-	if err := validate.ValidateValue(validate.TypeText, name); err != nil {
+	if err := validate.ValidateValue(validate.TypeZoneName, name); err != nil {
 		f.err = err
 		return f, nil
 	}
@@ -344,7 +344,7 @@ func (m RootModel) applySectionForm(msg SectionFormSubmitMsg) (tea.Model, tea.Cm
 
 	name := config.SectionKeyName(*sec)
 	for _, row := range m.upstreams {
-		if row.Kind == msg.Kind && !row.Dead && strings.EqualFold(row.Name, name) {
+		if row.Kind == msg.Kind && !row.Dead && domain.EqualName(row.Name, name) {
 			m.notice = fmt.Sprintf("%s %s already exists in %s — apply will be refused",
 				row.Kind, row.Name, row.Source)
 			break

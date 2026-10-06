@@ -23,7 +23,13 @@ func RRString(zone string, r Record) string {
 	name := strings.TrimSuffix(r.Name, ".")
 	fqdn := z
 	if name != "" && name != "@" {
-		fqdn = name + "." + z
+		if z == "." {
+			// The root zone contributes no suffix of its own; the relative
+			// owner is already absolute once it carries a trailing dot.
+			fqdn = name + "."
+		} else {
+			fqdn = name + "." + z
+		}
 	}
 	return fmt.Sprintf("%s %d IN %s %s", fqdn, r.TTL, r.RType, r.Value)
 }

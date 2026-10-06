@@ -188,3 +188,26 @@ control-enable: yes
 		}
 	})
 }
+
+// TestRegeneratedEntriesRootZone pins that regenerating a root-zone fragment
+// keeps the root owner and its refuse type: the record projects into the "."
+// zone (so no implicit transparent zone of its own owner is sprung) and is
+// rendered without a doubled dot.
+func TestRegeneratedEntriesRootZone(t *testing.T) {
+	f := parseFrag(t, `server:
+local-zone: "." refuse
+local-data: "example.com. 300 IN A 1.2.3.4"
+`)
+	zones, err := config.ZonesFromFragment(f)
+	if err != nil {
+		t.Fatalf("ZonesFromFragment: %v", err)
+	}
+	got := regeneratedEntries(zones)
+	want := []domain.Entry{
+		{Key: "local-zone", Value: `"." refuse`},
+		{Key: "local-data", Value: `"example.com. 300 IN A 1.2.3.4"`},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("regeneratedEntries =\n%+v\nwant\n%+v", got, want)
+	}
+}

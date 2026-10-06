@@ -11,7 +11,12 @@ type UnboundError struct {
 	Code    string
 	Message string
 	Detail  string
+	// cause is the original exec error, kept so errors.Is/As can reach it.
+	cause error
 }
+
+// Unwrap exposes the wrapped exec error to errors.Is/As.
+func (e *UnboundError) Unwrap() error { return e.cause }
 
 // Error renders the error as "[CODE] message: detail". When Detail is empty
 // it renders "[CODE] message" without a dangling ": " separator.
@@ -31,12 +36,12 @@ const (
 	ErrSyntax         = "SYNTAX_ERROR"      // invalid RR data (input failed validation or shape mismatch)
 	ErrPermission     = "PERMISSION_DENIED" // insufficient permissions on the control interface
 	ErrControlTimeout = "CONTROL_TIMEOUT"   // unbound-control did not finish within the client timeout
-	ErrNotRunning     = "NOT_RUNNING"       // unbound is not running
 	ErrExit           = "EXIT_ERROR"        // any other non-zero exit
 )
 
-// wrapError maps an exec error plus the captured combined output to an
-// *UnboundError.
+// wrapError maps an exec error plus the error detail (stderr, or stdout when
+// stderr was empty) to an *UnboundError, preserving the original error as the
+// cause for errors.Is/As.
 func wrapError(err error, output string) error {
 	if err == nil {
 		return nil
@@ -45,11 +50,11 @@ func wrapError(err error, output string) error {
 		detail := output
 		switch {
 		case strings.Contains(detail, "syntax error"):
-			return &UnboundError{Code: ErrSyntax, Message: "invalid RR data", Detail: detail}
+			return &UnboundError{Code: ErrSyntax, Message: "invalid RR data", Detail: detail, cause: err}
 		case strings.Contains(detail, "permission denied"):
-			return &UnboundError{Code: ErrPermission, Message: "check control interface permissions", Detail: detail}
+			return &UnboundError{Code: ErrPermission, Message: "check control interface permissions", Detail: detail, cause: err}
 		}
-		return &UnboundError{Code: ErrExit, Message: "command exited with error", Detail: detail}
+		return &UnboundError{Code: ErrExit, Message: "command exited with error", Detail: detail, cause: err}
 	}
-	return &UnboundError{Code: ErrExit, Message: err.Error()}
+	return &UnboundError{Code: ErrExit, Message: err.Error(), cause: err}
 }

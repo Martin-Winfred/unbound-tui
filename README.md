@@ -44,7 +44,7 @@ sudo unbound-control list_local_zones
 sudo unbound-control list_local_data
 ```
 
-On other layouts, add `include: /etc/unbound/unbound.conf.d/unbound-tui.conf` to the main config. The tool warns on start when the fragment is not included (literal path or a matching glob); it never writes the main config.
+On other layouts, add `include: /etc/unbound/unbound.conf.d/unbound-tui.conf` to the main config. The tool never writes the main config. It checks on start and refuses **apply** while the main config does not directly include the fragment (literal path or a matching glob), so a missing include can never make the UI report success while Unbound reloads the old configuration. The check inspects the main config only: a fragment pulled in indirectly through another included file is not detected, so include it in the main config directly.
 
 ## Ownership boundary
 
@@ -141,3 +141,7 @@ See [ROADMAP.md](ROADMAP.md) for the milestone plan and [docs/deploy.md](docs/de
 Bug reports, feature requests and ideas are welcome. Please open an issue:
 
 <https://github.com/Martin-Winfred/unbound-tui/issues>
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).

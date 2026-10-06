@@ -1,9 +1,11 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,17 +16,19 @@ import (
 )
 
 type fakeCtl struct {
-	reloads int
-	zones   []domain.LocalZone
-	rrs     []string
+	reloads  int
+	zones    []domain.LocalZone
+	rrs      []string
+	zonesErr error
+	rrsErr   error
 }
 
 func (f *fakeCtl) Reload() error                      { f.reloads++; return nil }
 func (f *fakeCtl) Status() (domain.StatusInfo, error) { return domain.StatusInfo{}, nil }
 func (f *fakeCtl) ListLocalZones() ([]domain.LocalZone, error) {
-	return f.zones, nil
+	return f.zones, f.zonesErr
 }
-func (f *fakeCtl) ListLocalData() ([]string, error) { return f.rrs, nil }
+func (f *fakeCtl) ListLocalData() ([]string, error) { return f.rrs, f.rrsErr }
 
 var _ domain.Controller = (*fakeCtl)(nil)
 
@@ -36,17 +40,22 @@ func newTestModel(t *testing.T) (RootModel, *fakeCtl) {
 		t.Fatalf("mkdir conf.d: %v", err)
 	}
 	conf := filepath.Join(dir, "unbound.conf")
-	// Mirror Debian's stub: include-toplevel with a glob under conf.d, which
-	// keeps the main config from glob-including itself. A literal include of
-	// our fragment would break the first apply, before the fragment exists.
-	if err := os.WriteFile(conf, []byte("include-toplevel: "+filepath.Join(confDir, "*.conf")+"\n"), 0644); err != nil {
+	frag := filepath.Join(dir, "frag.conf")
+	// Mirror Debian's stub (a conf.d glob that keeps the main config from
+	// glob-including itself) plus a literal include of our fragment, which
+	// lives outside that glob. The literal include is what apply's include
+	// gate verifies; a missing fragment is tolerated (it is created on the
+	// first apply), so this is safe before the first write.
+	if err := os.WriteFile(conf, []byte(
+		"include-toplevel: "+filepath.Join(confDir, "*.conf")+"\n"+
+			"include: "+frag+"\n"), 0644); err != nil {
 		t.Fatalf("write conf: %v", err)
 	}
 	mgr, err := config.NewManager(conf)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	mgr.SetFragmentPath(filepath.Join(dir, "frag.conf"))
+	mgr.SetFragmentPath(frag)
 	ctl := &fakeCtl{}
 	m := NewRootModel(ctl, mgr, "test")
 	// Run the Init path so models start with a valid (empty) fragment, which
@@ -83,6 +92,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyTab}
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "ctrl+c":
+		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case " ":
 		return tea.KeyMsg{Type: tea.KeySpace}
 	default:
@@ -152,6 +163,124 @@ func TestProjectionErrorSurfacesLoudly(t *testing.T) {
 	}
 }
 
+// TestProjectionFailureBlocksLocalEdits pins the data-integrity guard: when
+// projection fails on a malformed local-* entry, a later Local-data edit must
+// not run regen from the empty projection (which would strip every existing
+// local-zone/local-data) and apply must refuse before writing.
+func TestProjectionFailureBlocksLocalEdits(t *testing.T) {
+	m, ctl := newTestModel(t)
+	src := "server:\n" +
+		"local-zone: \"example.com.\" static\n" +
+		"local-data: \"example.com. 300 IN A 192.0.2.1\"\n" +
+		"local-data: \"broken\n"
+	if err := os.WriteFile(m.cfg.FragmentPath(), []byte(src), 0644); err != nil {
+		t.Fatalf("write fragment: %v", err)
+	}
+	before, err := os.ReadFile(m.cfg.FragmentPath())
+	if err != nil {
+		t.Fatalf("read fragment before: %v", err)
+	}
+
+	// 1. The malformed entry surfaces loudly through the normal error path.
+	loaded := m.Init()().(ZonesLoadedMsg)
+	next, cmd := m.Update(loaded)
+	if cmd == nil {
+		t.Fatal("projection error produced no command, want an ErrorMsg")
+	}
+	errMsg, ok := cmd().(ErrorMsg)
+	if !ok {
+		t.Fatalf("projection error produced %T, want ErrorMsg", cmd())
+	}
+	root := asRoot(t, mustUpdate(t, asRoot(t, next), errMsg))
+	if root.state != StateError || root.lastError == nil {
+		t.Fatalf("state/error = %v/%v, want StateError and a non-nil error", root.state, root.lastError)
+	}
+	if len(root.zones) != 0 {
+		t.Fatalf("zones = %+v, want empty after the projection failure", root.zones)
+	}
+
+	// Dismissing the error leaves the remaining model intact.
+	root = asRoot(t, mustUpdate(t, root, key("x")))
+	if root.state != StateReady {
+		t.Fatalf("state = %v, want StateReady after dismissing the error", root.state)
+	}
+
+	// 2/3. The Local-data edit is refused: no regen from the empty projection,
+	// no fragment mutation, and an actionable notice.
+	root = submitInFormState(t, root, FormSubmitMsg{Mode: FormAddZone, Name: "new.example", Type: "transparent"})
+	if len(root.zones) != 0 {
+		t.Errorf("zones = %+v, want empty: the edit must not rebuild from the failed projection", root.zones)
+	}
+	if !hasEntry(root.frag, "local-zone", `"example.com." static`) {
+		t.Errorf("frag lost the original local-zone: %+v", root.frag)
+	}
+	if !hasEntry(root.frag, "local-data", `"example.com. 300 IN A 192.0.2.1"`) {
+		t.Errorf("frag lost the original local-data: %+v", root.frag)
+	}
+	if hasEntry(root.frag, "local-zone", `"new.example." transparent`) {
+		t.Errorf("frag gained the refused zone: %+v", root.frag)
+	}
+	if !strings.Contains(root.notice, "local-*") {
+		t.Errorf("notice = %q, want an actionable malformed-local-* hint", root.notice)
+	}
+
+	// 4. Apply refuses with an ErrorMsg and leaves the file byte-unchanged.
+	msg := root.apply()()
+	if _, ok := msg.(AppliedMsg); ok {
+		t.Fatal("apply produced AppliedMsg, want an ErrorMsg while projection failed")
+	}
+	errMsg, ok = msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	if !strings.Contains(errMsg.Error.Error(), "local data") {
+		t.Errorf("apply error %q does not name the missing local data", errMsg.Error.Error())
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+	after, err := os.ReadFile(m.cfg.FragmentPath())
+	if err != nil {
+		t.Fatalf("read fragment after: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("fragment changed on a refused apply:\n got %q\nwant %q", after, before)
+	}
+}
+
+// TestZonesValidLifecycle pins the projection flag lifecycle: a successful
+// projection sets it, a failed projection clears it, and a later successful
+// re-projection adopted by a Config-view submission restores it.
+func TestZonesValidLifecycle(t *testing.T) {
+	m, _ := newTestModel(t) // Init projects an empty fragment successfully
+	if !m.zonesValid {
+		t.Fatal("zonesValid = false after a successful Init projection, want true")
+	}
+
+	// A failed projection clears the flag.
+	m.frag = domain.Fragment{Sections: []domain.Section{{Kind: "server", Entries: []domain.Entry{
+		{Key: "local-data", Value: `"unterminated`},
+	}}}}
+	root := asRoot(t, mustUpdate(t, m, ZonesLoadedMsg{Fragment: m.frag}))
+	if root.zonesValid {
+		t.Error("zonesValid = true after a failed projection, want false")
+	}
+
+	// A successful re-projection adopted by a Config-view submission sets it
+	// again: setConfigFragment installs the valid fragment and re-projects,
+	// then the form submit takes the same adoption path in the live update.
+	root = setConfigFragment(t, root, domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "local-zone", Value: `"example.com." static`}}},
+	}})
+	root = submitInFormState(t, root, ConfigFormSubmitMsg{Mode: FormAddSection, Kind: "server"})
+	if !root.zonesValid {
+		t.Error("zonesValid = false after a successful re-projection, want true")
+	}
+	if len(root.zones) != 1 || root.zones[0].Name != "example.com." {
+		t.Errorf("zones = %+v, want the re-projected example.com. zone", root.zones)
+	}
+}
+
 func mustUpdate(t *testing.T, m RootModel, msg tea.Msg) tea.Model {
 	t.Helper()
 	next, _ := m.Update(msg)
@@ -161,7 +290,7 @@ func mustUpdate(t *testing.T, m RootModel, msg tea.Msg) tea.Model {
 func TestAddZoneThenApplyWritesAndReloads(t *testing.T) {
 	m, ctl := newTestModel(t)
 
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
 	if !m.dirty {
 		t.Fatal("dirty = false after add, want true")
 	}
@@ -286,8 +415,9 @@ func forwardZone(name string) domain.Section {
 
 // writeSentinelFragment installs a valid fragment file with content distinct
 // from the in-memory model, so a refused apply can be shown to leave the file
-// byte-unchanged. The sentinel lives outside newTestModel's conf.d glob, so it
-// never joins the effective include graph.
+// byte-unchanged. The sentinel is our own fragment, which conflict detection
+// excludes by path, so it never self-conflicts even though the main config
+// includes it.
 func writeSentinelFragment(t *testing.T, m RootModel) string {
 	t.Helper()
 	const sentinel = "server:\n  edns-buffer-size: 4096\n"
@@ -440,7 +570,7 @@ func TestApplyCreatesFragmentWithLiteralInclude(t *testing.T) {
 		t.Fatalf("fragment exists before first apply (stat err = %v)", err)
 	}
 
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
 	m.dirty = true
 	msg := m.apply()()
 	if _, ok := msg.(AppliedMsg); !ok {
@@ -658,6 +788,116 @@ func TestApplyRefusesWhenIncludeGraphUnreadable(t *testing.T) {
 	assertFragmentUnchanged(t, m, sentinel)
 }
 
+// TestApplyRefusesWhenFragmentNotIncluded pins the include gate: when the main
+// config does not cover our fragment, apply must stop before writing or
+// reloading, name the missing include, and leave the fragment file
+// byte-identical. Without the gate the UI would report "changes applied" while
+// Unbound reloaded the old configuration.
+func TestApplyRefusesWhenFragmentNotIncluded(t *testing.T) {
+	m, ctl := newTestModel(t)
+	sentinel := writeSentinelFragment(t, m)
+	// A main config that is readable and conflict-free but never names our
+	// fragment.
+	if err := os.WriteFile(m.cfg.MainConfPath(),
+		[]byte("server:\n  verbosity: 1\n"), 0644); err != nil {
+		t.Fatalf("write main conf: %v", err)
+	}
+	m.frag = domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{{Key: "edns-buffer-size", Value: "1232"}}},
+	}}
+	m.dirty = true
+
+	msg := m.apply()()
+	errMsg, ok := msg.(ErrorMsg)
+	if !ok {
+		t.Fatalf("apply produced %T (%v), want ErrorMsg", msg, msg)
+	}
+	for _, want := range []string{"apply blocked", config.ErrMissingInclude, m.cfg.FragmentPath()} {
+		if !strings.Contains(errMsg.Error.Error(), want) {
+			t.Errorf("error %q missing %q", errMsg.Error.Error(), want)
+		}
+	}
+	// The status bar renders one row and does not split newlines, so the
+	// apply-blocked message must be flattened to a single line while still
+	// wrapping the underlying ConfigError for errors.As callers.
+	if strings.Contains(errMsg.Error.Error(), "\n") {
+		t.Errorf("apply-blocked error must be one line, got %q", errMsg.Error.Error())
+	}
+	var ce *config.ConfigError
+	if !errors.As(errMsg.Error, &ce) || ce.Type != config.ErrMissingInclude {
+		t.Errorf("apply-blocked error %v must wrap ConfigError %s", errMsg.Error, config.ErrMissingInclude)
+	}
+	if ctl.reloads != 0 {
+		t.Errorf("reloads = %d, want 0 on a refused apply", ctl.reloads)
+	}
+	assertFragmentUnchanged(t, m, sentinel)
+}
+
+// TestApplyProceedsWhenFragmentIncluded pins the other side of the gate: a main
+// config that includes our fragment leaves apply unchanged (write + reload).
+func TestApplyProceedsWhenFragmentIncluded(t *testing.T) {
+	m, ctl := newTestModel(t)
+	m.frag = domain.Fragment{Sections: []domain.Section{{Kind: "server"}}}
+	m.dirty = true
+
+	msg := m.apply()()
+	if _, ok := msg.(AppliedMsg); !ok {
+		t.Fatalf("apply produced %T (%v), want AppliedMsg", msg, msg)
+	}
+	if ctl.reloads != 1 {
+		t.Errorf("reloads = %d, want 1", ctl.reloads)
+	}
+}
+
+// TestApplyCapturesDeepCopyOfFragment pins finding M8: apply must capture a deep
+// copy of the fragment before the background command runs, so a later UI edit
+// that mutates a section/entry element in place cannot change what the command
+// validates or writes. The injected mutation below must not leak into the
+// written file.
+func TestApplyCapturesDeepCopyOfFragment(t *testing.T) {
+	m, ctl := newTestModel(t)
+	m.frag = domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." transparent`},
+			{Key: "edns-buffer-size", Value: "1232"},
+		}},
+	}}
+	m.zones = []domain.Zone{{Name: "example.com.", Type: "transparent"}}
+	m.zonesValid = true
+
+	cmd := m.apply()
+	if cmd == nil {
+		t.Fatal("apply returned no command, want the background apply cmd")
+	}
+
+	// Simulate an in-flight UI edit: mutate the live fragment in place (this is
+	// exactly the shape configform/configview/sectionform use). The captured
+	// command must be insulated from it.
+	m.frag.Sections[0].Entries[0].Value = `"evil.example." static`
+	m.frag.Sections[0].Entries[1].Value = "0"
+
+	msg := cmd()
+	if _, ok := msg.(AppliedMsg); !ok {
+		t.Fatalf("apply produced %T (%v), want AppliedMsg", msg, msg)
+	}
+	got, err := os.ReadFile(m.cfg.FragmentPath())
+	if err != nil {
+		t.Fatalf("read fragment: %v", err)
+	}
+	if strings.Contains(string(got), "evil.example.") {
+		t.Fatalf("apply wrote a later in-place mutation; fragment:\n%s", got)
+	}
+	if strings.Contains(string(got), "edns-buffer-size: 0") {
+		t.Fatalf("apply wrote a later in-place scalar mutation; fragment:\n%s", got)
+	}
+	if !strings.Contains(string(got), `local-zone: "example.com." transparent`) {
+		t.Fatalf("apply did not write the captured fragment:\n%s", got)
+	}
+	if ctl.reloads != 1 {
+		t.Errorf("reloads = %d, want 1", ctl.reloads)
+	}
+}
+
 func TestQuitWithDirtyConfirms(t *testing.T) {
 	m, _ := newTestModel(t)
 	m.dirty = true
@@ -665,6 +905,134 @@ func TestQuitWithDirtyConfirms(t *testing.T) {
 	if next.state != StateConfirm || next.confirmKind != "quit" {
 		t.Errorf("state/kind = %v/%q, want StateConfirm/quit", next.state, next.confirmKind)
 	}
+}
+
+// assertQuits runs one Update and asserts the returned command quits the
+// program (tea.Quit yields tea.QuitMsg).
+func assertQuits(t *testing.T, m RootModel, msg tea.Msg) RootModel {
+	t.Helper()
+	next, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("Update returned nil command, want tea.Quit")
+	}
+	if got := cmd(); got != (tea.QuitMsg{}) {
+		t.Fatalf("command produced %T (%v), want tea.QuitMsg", got, got)
+	}
+	return asRoot(t, next)
+}
+
+// TestCtrlCQuitsEveryState pins the hard-quit rule: ctrl+c returns tea.Quit
+// from every state, including the modal forms and StateApplying, which route
+// or swallow their own keys. The check is central in Update, so it cannot be
+// bypassed by a state that handles its own keymap.
+func TestCtrlCQuitsEveryState(t *testing.T) {
+	states := map[string]func(t *testing.T) RootModel{
+		"ready": func(t *testing.T) RootModel {
+			m, _ := newTestModel(t)
+			return m
+		},
+		"form": func(t *testing.T) RootModel {
+			m := configModel(t, domain.Fragment{})
+			m.openAddSectionForm()
+			return m
+		},
+		"section-form": func(t *testing.T) RootModel {
+			return openSpecialized(t, configModel(t, forwardSection("192.0.2.53")), 0)
+		},
+		"confirm": func(t *testing.T) RootModel {
+			m, _ := newTestModel(t)
+			m.dirty = true
+			m.confirmKind = "quit"
+			m.state = StateConfirm
+			return m
+		},
+		"foreign": func(t *testing.T) RootModel {
+			m, _ := newTestModel(t)
+			next, _ := m.requestForeign()
+			m = asRoot(t, next)
+			if m.state != StateForeign {
+				t.Fatalf("state = %v, want StateForeign", m.state)
+			}
+			return m
+		},
+		"error": func(t *testing.T) RootModel {
+			m, _ := newTestModel(t)
+			m.lastError = errors.New("boom")
+			m.state = StateError
+			return m
+		},
+		"applying": func(t *testing.T) RootModel {
+			m, _ := newTestModel(t)
+			m.state = StateApplying
+			return m
+		},
+	}
+	for name, build := range states {
+		t.Run(name, func(t *testing.T) {
+			assertQuits(t, build(t), key("ctrl+c"))
+		})
+	}
+}
+
+// TestCtrlCReadyKeepsQuitFlow pins that the central ctrl+c check excludes
+// StateReady, where ctrl+c must behave exactly like q: quit immediately when
+// clean, but open the unsaved-changes confirmation when dirty.
+func TestCtrlCReadyKeepsQuitFlow(t *testing.T) {
+	t.Run("clean quits", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		assertQuits(t, m, key("ctrl+c"))
+	})
+	t.Run("dirty confirms", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m.dirty = true
+		next, cmd := m.Update(key("ctrl+c"))
+		if cmd != nil {
+			t.Fatalf("ctrl+c returned a command in Ready with dirty state, want the confirm (no direct quit)")
+		}
+		r := asRoot(t, next)
+		if r.state != StateConfirm || r.confirmKind != "quit" {
+			t.Errorf("state/kind = %v/%q, want StateConfirm/quit", r.state, r.confirmKind)
+		}
+	})
+}
+
+// TestCtrlCLeavesOtherKeysRouting pins that the central ctrl+c check does not
+// hijack the per-state routing: q still closes the foreign view (rather than
+// quitting), StateApplying still swallows non-quit keys, and any other key
+// still dismisses StateError.
+func TestCtrlCLeavesOtherKeysRouting(t *testing.T) {
+	t.Run("foreign q closes", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		next, _ := m.requestForeign()
+		m = asRoot(t, next)
+		_, cmd := m.Update(key("q"))
+		if cmd == nil {
+			t.Fatal("q returned nil command, want ForeignCloseMsg")
+		}
+		if got := cmd(); got != (ForeignCloseMsg{}) {
+			t.Fatalf("q produced %T (%v), want ForeignCloseMsg", got, got)
+		}
+	})
+	t.Run("applying swallows other keys", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m.state = StateApplying
+		next, cmd := m.Update(key("j"))
+		if r := asRoot(t, next); r.state != StateApplying {
+			t.Errorf("state = %v, want StateApplying", r.state)
+		}
+		if cmd != nil {
+			t.Errorf("cmd = %v, want nil", cmd)
+		}
+	})
+	t.Run("error dismisses on other key", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m.lastError = errors.New("boom")
+		m.state = StateError
+		next := asRoot(t, mustUpdate(t, m, key("x")))
+		if next.state != StateReady {
+			t.Errorf("state = %v, want StateReady", next.state)
+		}
+	})
 }
 
 func TestToggleZoneDisabledEnablesRecords(t *testing.T) {
@@ -817,10 +1185,28 @@ func TestMoveCursors(t *testing.T) {
 	}
 }
 
+// TestStatusLineUsesCachedRoot pins that the root flag is cached on the model
+// at construction instead of syscalling os.Geteuid() on every frame, and that
+// the status line reads the cached value.
+func TestStatusLineUsesCachedRoot(t *testing.T) {
+	if got, want := NewRootModel(nil, nil, "").isRoot, os.Geteuid() == 0; got != want {
+		t.Errorf("NewRootModel isRoot = %v, want %v (from os.Geteuid)", got, want)
+	}
+	m, _ := newTestModel(t)
+	m.isRoot = false
+	if got := m.statusLine(400); !strings.Contains(got, "not root") {
+		t.Errorf("non-root status line = %q, want the not-root marker", got)
+	}
+	m.isRoot = true
+	if got := m.statusLine(400); strings.Contains(got, "not root") {
+		t.Errorf("root status line = %q, should not carry the not-root marker", got)
+	}
+}
+
 func TestAddDuplicateZoneRejected(t *testing.T) {
 	m, _ := newTestModel(t)
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
-	next := asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com.", Type: "static"}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
+	next := submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com.", Type: "static"})
 	if next.state != StateError {
 		t.Fatalf("state = %v, want StateError for a duplicate zone", next.state)
 	}
@@ -829,24 +1215,73 @@ func TestAddDuplicateZoneRejected(t *testing.T) {
 	}
 }
 
+// TestAddZoneMovesCursorToNewZone pins that a successful add-zone leaves the
+// selection on the zone just created (and resets the record cursor), so the
+// next action targets what the user just added instead of the old selection.
+func TestAddZoneMovesCursorToNewZone(t *testing.T) {
+	m, _ := newTestModel(t)
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "a.example", Type: "transparent"})
+	m.zoneCursor = 0
+	m.recCursor = 0
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "z.example", Type: "transparent"})
+	if m.zoneCursor != 1 {
+		t.Errorf("zoneCursor = %d, want 1 (the new zone)", m.zoneCursor)
+	}
+	if m.recCursor != 0 {
+		t.Errorf("recCursor = %d, want 0", m.recCursor)
+	}
+}
+
+// TestInvalidFormSubmitIsNoOp pins that a submit whose target does not exist
+// leaves the fragment and the dirty flag untouched: the old code fell through
+// to regen()+dirty for these guard failures even though nothing changed.
+func TestInvalidFormSubmitIsNoOp(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  FormSubmitMsg
+	}{
+		{"add-record out-of-range zone", FormSubmitMsg{Mode: FormAddRecord, ZoneIndex: 5, Name: "www", Type: "A", Value: "192.0.2.1", TTL: 300}},
+		{"edit-ttl out-of-range record", FormSubmitMsg{Mode: FormEditTTL, ZoneIndex: 0, RecIndex: 5, TTL: 60}},
+		{"set-type out-of-range zone", FormSubmitMsg{Mode: FormSetType, ZoneIndex: 9, Type: "static"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := newTestModel(t)
+			m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
+			m.dirty = false
+			before := cloneFragment(m.frag)
+			next := submitInFormState(t, m, tc.msg)
+			if next.dirty {
+				t.Error("dirty = true after a no-op submit, want it untouched")
+			}
+			if !reflect.DeepEqual(next.frag, before) {
+				t.Errorf("fragment changed after a no-op submit:\n got %+v\nwant %+v", next.frag, before)
+			}
+			if next.state != StateReady {
+				t.Errorf("state = %v, want StateReady", next.state)
+			}
+		})
+	}
+}
+
 // TestMutationsRegenerateFragment checks that add-record, edit-ttl and
 // set-type all fold into the stored fragment immediately.
 func TestMutationsRegenerateFragment(t *testing.T) {
 	m, _ := newTestModel(t)
 
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddRecord, ZoneIndex: 0, Name: "www", Type: "A", Value: "192.0.2.1", TTL: 300}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddRecord, ZoneIndex: 0, Name: "www", Type: "A", Value: "192.0.2.1", TTL: 300})
 	got := localEntries(m.frag)
 	if len(got) != 2 || got[1].Key != "local-data" || got[1].Value != `"www.example.com. 300 IN A 192.0.2.1"` {
 		t.Fatalf("frag after add-record = %+v, want the local-data entry", got)
 	}
 
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormEditTTL, ZoneIndex: 0, RecIndex: 0, TTL: 60}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormEditTTL, ZoneIndex: 0, RecIndex: 0, TTL: 60})
 	if got := localEntries(m.frag); got[1].Value != `"www.example.com. 60 IN A 192.0.2.1"` {
 		t.Errorf("frag after edit-ttl = %+v, want TTL 60", got)
 	}
 
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormSetType, ZoneIndex: 0, Type: "static"}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormSetType, ZoneIndex: 0, Type: "static"})
 	if got := localEntries(m.frag); got[0].Value != `"example.com." static` {
 		t.Errorf("frag after set-type = %+v, want static", got)
 	}
@@ -859,9 +1294,9 @@ func TestAddDuplicateRecordRejected(t *testing.T) {
 		Records: []domain.Record{{Name: "www", RType: "A", Value: "192.0.2.1", TTL: 300}},
 	}}
 	// Same record, differing only in name case and record type case.
-	next := asRoot(t, mustUpdate(t, m, FormSubmitMsg{
+	next := submitInFormState(t, m, FormSubmitMsg{
 		Mode: FormAddRecord, ZoneIndex: 0, Name: "WWW", Type: "a", Value: "192.0.2.1", TTL: 60,
-	}))
+	})
 	if next.state != StateError {
 		t.Fatalf("state = %v, want StateError for a duplicate record", next.state)
 	}
@@ -936,12 +1371,73 @@ func TestToggleDisabledOnEmptyModel(t *testing.T) {
 	}
 }
 
+// TestLocalMutationGuardsRefuseWhenProjectionInvalid pins the shared
+// data-integrity guard on the Local-data mutations: when the fragment's
+// local-* entries did not project (zonesValid false), deleteZone, deleteRecord
+// and toggleDisabled must refuse with the actionable notice and touch neither
+// the zones model, the fragment nor the dirty flag. These guards were
+// previously untested; without them a stale zonesValid could let a mutation
+// regen() from the failed (empty) projection and drop local data.
+func TestLocalMutationGuardsRefuseWhenProjectionInvalid(t *testing.T) {
+	build := func(t *testing.T) RootModel {
+		t.Helper()
+		m, _ := newTestModel(t)
+		m.zones = []domain.Zone{{
+			Name: "example.com.", Type: "transparent",
+			Records: []domain.Record{{Name: "www", RType: "A", Value: "192.0.2.1", TTL: 300}},
+		}}
+		m.frag = domain.Fragment{Sections: []domain.Section{
+			{Kind: "server", Entries: []domain.Entry{
+				{Key: "local-zone", Value: `"example.com." transparent`},
+				{Key: "local-data", Value: `"www.example.com. 300 IN A 192.0.2.1"`},
+			}},
+		}}
+		m.zonesValid = false
+		m.zoneFocused = true
+		return m
+	}
+
+	assertRefused := func(t *testing.T, m RootModel) {
+		t.Helper()
+		if m.notice != projectionFailedNotice {
+			t.Errorf("notice = %q, want the projection-failed notice", m.notice)
+		}
+		if m.dirty {
+			t.Error("dirty = true after a refused mutation")
+		}
+		if len(m.zones) != 1 || len(m.zones[0].Records) != 1 {
+			t.Errorf("zones = %+v, want the guard to leave them untouched", m.zones)
+		}
+		if got := localEntries(m.frag); len(got) != 2 {
+			t.Errorf("frag local entries = %+v, want the guard to leave them untouched", got)
+		}
+	}
+
+	t.Run("deleteZone", func(t *testing.T) {
+		m := build(t)
+		m.deleteZone(0)
+		assertRefused(t, m)
+	})
+
+	t.Run("deleteRecord", func(t *testing.T) {
+		m := build(t)
+		m.deleteRecord(0, 0)
+		assertRefused(t, m)
+	})
+
+	t.Run("toggleDisabled", func(t *testing.T) {
+		m := build(t)
+		m.toggleDisabled()
+		assertRefused(t, m)
+	})
+}
+
 // TestConfigCrossViewZoneAddVisibleInConfig pins Review Focus #4: a zone added
 // in the Local data view lands in frag and is immediately visible as a
 // local-zone row in the Config view, which projects the same fragment.
 func TestConfigCrossViewZoneAddVisibleInConfig(t *testing.T) {
 	m, _ := newTestModel(t)
-	m = asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"}))
+	m = submitInFormState(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "example.com", Type: "transparent"})
 	m.view = ViewConfig
 	m.clampCfgCursors()
 
@@ -1045,6 +1541,46 @@ func TestCloneZonesIsIndependent(t *testing.T) {
 	clone[0].Name = "changed."
 	if orig[0].Records[0].TTL != 300 || orig[0].Name != "example.com." {
 		t.Errorf("clone mutated the original: %+v", orig)
+	}
+}
+
+// TestCloneFragmentIsIndependent pins that cloneFragment detaches every slice
+// and flag: mutating the original after cloning (including in-place element
+// writes and slice growth) must not be visible through the clone.
+func TestCloneFragmentIsIndependent(t *testing.T) {
+	orig := domain.Fragment{Sections: []domain.Section{
+		{Kind: "server", Entries: []domain.Entry{
+			{Key: "local-zone", Value: `"example.com." transparent`},
+			{Key: "local-data", Value: `"www.example.com. A 192.0.2.1"`, Disabled: true},
+		}},
+		{Kind: "forward-zone", Entries: []domain.Entry{
+			{Key: "name", Value: `"example.org."`},
+		}},
+	}}
+	clone := cloneFragment(orig)
+
+	// Mutate the original in place: element writes, a flag flip, and slice
+	// growth on the outer and inner slices.
+	orig.Sections[0].Kind = "changed"
+	orig.Sections[0].Entries[0].Value = "changed"
+	orig.Sections[0].Entries[1].Disabled = false
+	orig.Sections = append(orig.Sections, domain.Section{Kind: "extra"})
+	orig.Sections[0].Entries = append(orig.Sections[0].Entries, domain.Entry{Key: "extra"})
+
+	if clone.Sections[0].Kind != "server" {
+		t.Errorf("clone section kind = %q, want server", clone.Sections[0].Kind)
+	}
+	if clone.Sections[0].Entries[0].Value != `"example.com." transparent` {
+		t.Errorf("clone entry value = %q, want the original", clone.Sections[0].Entries[0].Value)
+	}
+	if !clone.Sections[0].Entries[1].Disabled {
+		t.Error("clone entry Disabled = false, want true")
+	}
+	if len(clone.Sections) != 2 {
+		t.Errorf("clone has %d sections, want 2 (append leaked through)", len(clone.Sections))
+	}
+	if len(clone.Sections[0].Entries) != 2 {
+		t.Errorf("clone has %d entries in section 0, want 2 (append leaked through)", len(clone.Sections[0].Entries))
 	}
 }
 
@@ -1160,4 +1696,252 @@ func TestZonesViewNavigation(t *testing.T) {
 	if m.recCursor != 0 {
 		t.Fatalf("record ctrl+u at top: recCursor = %d, want 0", m.recCursor)
 	}
+}
+
+// --- R3 Task 4: form messages must match the current state ---
+
+// submitInFormState delivers a form message as if the corresponding form were
+// open — the only state that honors it. Apply-path tests use it to exercise
+// applyForm/applyConfigForm/applySectionForm without walking the form UI.
+func submitInFormState(t *testing.T, m RootModel, msg tea.Msg) RootModel {
+	t.Helper()
+	if _, ok := msg.(SectionFormSubmitMsg); ok {
+		m.state = StateSectionForm
+	} else {
+		m.state = StateForm
+	}
+	return asRoot(t, mustUpdate(t, m, msg))
+}
+
+// formsLoaded reports whether both the generic and the specialized form are
+// still present. A zero RecordForm/SectionForm has no inputs (FormAddZone is
+// the zero FormMode, so the mode alone cannot signal an empty form).
+func formsLoaded(m RootModel) bool {
+	return len(m.form.inputs) > 0 && len(m.secForm.inputs) > 0
+}
+
+// TestFormCancelOnlyHonoredInFormState pins that FormCancelMsg is only honored
+// while a form is actually open (StateForm/StateSectionForm). In every other
+// state it must be ignored completely, leaving the state and the loaded forms
+// untouched.
+func TestFormCancelOnlyHonoredInFormState(t *testing.T) {
+	newModel := func(t *testing.T, state AppState) RootModel {
+		t.Helper()
+		m, _ := newTestModel(t)
+		m.form = newZoneForm()
+		m.secForm = newSectionForm(forwardSection("192.0.2.53"), 0)
+		m.state = state
+		return m
+	}
+
+	for _, tc := range []struct {
+		name    string
+		state   AppState
+		honored bool
+	}{
+		{"ready ignored", StateReady, false},
+		{"foreign ignored", StateForeign, false},
+		{"applying ignored", StateApplying, false},
+		{"confirm ignored", StateConfirm, false},
+		{"error ignored", StateError, false},
+		{"form honored", StateForm, true},
+		{"section form honored", StateSectionForm, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newModel(t, tc.state)
+			next := asRoot(t, mustUpdate(t, m, FormCancelMsg{}))
+			if !tc.honored {
+				if next.state != tc.state {
+					t.Errorf("state = %v, want %v (cancel must be ignored)", next.state, tc.state)
+				}
+				if !formsLoaded(next) {
+					t.Errorf("cancel cleared a form while in %v", tc.state)
+				}
+				return
+			}
+			if next.state != StateReady {
+				t.Errorf("state = %v, want StateReady", next.state)
+			}
+			if formsLoaded(next) {
+				t.Errorf("cancel did not clear both forms (inputs: form=%d secForm=%d)",
+					len(next.form.inputs), len(next.secForm.inputs))
+			}
+		})
+	}
+}
+
+// TestLateSubmitAfterCancelIgnored pins that a submit command already in flight
+// when the user cancels is ignored completely: no mutation, no regen, no
+// dirty flag, no state change.
+func TestLateSubmitAfterCancelIgnored(t *testing.T) {
+	t.Run("zones form", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m.form = newZoneForm()
+		m.state = StateForm
+		m = asRoot(t, mustUpdate(t, m, FormCancelMsg{}))
+		if m.state != StateReady {
+			t.Fatalf("state = %v, want StateReady after cancel", m.state)
+		}
+
+		before := m.frag
+		next := asRoot(t, mustUpdate(t, m, FormSubmitMsg{Mode: FormAddZone, Name: "late.example", Type: "transparent"}))
+		if next.dirty {
+			t.Error("late zone submit set dirty")
+		}
+		if len(next.zones) != 0 {
+			t.Errorf("zones = %+v, want empty (late submit ignored)", next.zones)
+		}
+		if !reflect.DeepEqual(next.frag, before) {
+			t.Errorf("fragment changed by a late submit: %+v", next.frag)
+		}
+		if next.state != StateReady {
+			t.Errorf("state = %v, want StateReady", next.state)
+		}
+	})
+
+	t.Run("config form", func(t *testing.T) {
+		m := configModel(t, domain.Fragment{})
+		m.openAddSectionForm()
+		m = asRoot(t, mustUpdate(t, m, FormCancelMsg{}))
+		if m.state != StateReady {
+			t.Fatalf("state = %v, want StateReady after cancel", m.state)
+		}
+
+		before := m.frag
+		next := asRoot(t, mustUpdate(t, m, ConfigFormSubmitMsg{Mode: FormAddSection, Kind: "server"}))
+		if next.dirty {
+			t.Error("late config submit set dirty")
+		}
+		if len(next.frag.Sections) != 0 {
+			t.Errorf("sections = %+v, want none (late submit ignored)", next.frag.Sections)
+		}
+		if !reflect.DeepEqual(next.frag, before) {
+			t.Errorf("fragment changed by a late submit: %+v", next.frag)
+		}
+	})
+
+	t.Run("section form", func(t *testing.T) {
+		m := configModel(t, forwardSection("192.0.2.53"))
+		m = openSpecialized(t, m, 0)
+		m = asRoot(t, mustUpdate(t, m, FormCancelMsg{}))
+		if m.state != StateReady {
+			t.Fatalf("state = %v, want StateReady after cancel", m.state)
+		}
+
+		before := m.frag
+		next := asRoot(t, mustUpdate(t, m, SectionFormSubmitMsg{
+			Kind: "forward-zone", SecIndex: 0, Name: "changed.", Addrs: []string{"192.0.2.99"},
+		}))
+		if next.dirty {
+			t.Error("late section submit set dirty")
+		}
+		if !reflect.DeepEqual(next.frag, before) {
+			t.Errorf("fragment changed by a late submit:\n got %+v\nwant %+v", next.frag, before)
+		}
+	})
+}
+
+// TestFormMessagesIgnoredWhileApplying pins that the StateApplying seal covers
+// every form message, not just KeyMsg: a duplicate or late submit/cancel that
+// arrives after an apply started must not be applied.
+func TestFormMessagesIgnoredWhileApplying(t *testing.T) {
+	newModel := func(t *testing.T) RootModel {
+		t.Helper()
+		m := configModel(t, forwardSection("192.0.2.53"))
+		m.form = newZoneForm()
+		m.secForm = newSectionForm(m.frag, 0)
+		m.state = StateApplying
+		m.dirty = true
+		return m
+	}
+
+	for _, msg := range []tea.Msg{
+		FormCancelMsg{},
+		FormSubmitMsg{Mode: FormAddZone, Name: "late.example", Type: "transparent"},
+		ConfigFormSubmitMsg{Mode: FormAddSection, Kind: "server"},
+		SectionFormSubmitMsg{Kind: "forward-zone", SecIndex: 0, Name: "changed.", Addrs: []string{"192.0.2.99"}},
+		key("a"),
+	} {
+		m := newModel(t)
+		before := m.frag
+		next, cmd := m.Update(msg)
+		got := asRoot(t, next)
+		if cmd != nil {
+			t.Errorf("%T: produced a command while applying, want nil", msg)
+		}
+		if got.state != StateApplying {
+			t.Errorf("%T: state = %v, want StateApplying (seal)", msg, got.state)
+		}
+		if !got.dirty {
+			t.Errorf("%T: dirty flag changed while applying", msg)
+		}
+		if !reflect.DeepEqual(got.frag, before) {
+			t.Errorf("%T: fragment changed while applying", msg)
+		}
+		if !formsLoaded(got) {
+			t.Errorf("%T: a form was cleared while applying", msg)
+		}
+	}
+}
+
+// TestFormSubmitAndCancelStillWork is the positive control for the state
+// guards: a submit from the matching form state still lands, and a cancel from
+// the matching form state still returns to Ready.
+func TestFormSubmitAndCancelStillWork(t *testing.T) {
+	t.Run("zones form submit", func(t *testing.T) {
+		m, _ := newTestModel(t)
+		m = asRoot(t, mustUpdate(t, m, key("a")))
+		if m.state != StateForm {
+			t.Fatalf("state = %v, want StateForm after 'a'", m.state)
+		}
+		m.form.inputs[0].SetValue("example.com")
+		m.form.inputs[1].SetValue("transparent")
+		_, cmd := m.Update(key("ctrl+s"))
+		if cmd == nil {
+			t.Fatalf("ctrl+s produced no command (err=%v)", m.form.err)
+		}
+		submit, ok := cmd().(FormSubmitMsg)
+		if !ok {
+			t.Fatalf("ctrl+s produced %T, want FormSubmitMsg", cmd())
+		}
+		next := asRoot(t, mustUpdate(t, m, submit))
+		if len(next.zones) != 1 || !next.dirty {
+			t.Fatalf("zones/dirty = %+v/%v, want one zone and dirty", next.zones, next.dirty)
+		}
+	})
+
+	t.Run("config form submit", func(t *testing.T) {
+		m := configModel(t, domain.Fragment{})
+		m.openAddSectionForm()
+		m.form.inputs[0].SetValue("server")
+		next, cmd := submitFormKey(t, m, "ctrl+s")
+		if cmd == nil {
+			t.Fatalf("ctrl+s produced no command (err=%v)", next.form.err)
+		}
+		submit, ok := cmd().(ConfigFormSubmitMsg)
+		if !ok {
+			t.Fatalf("ctrl+s produced %T, want ConfigFormSubmitMsg", cmd())
+		}
+		got := asRoot(t, mustUpdate(t, next, submit))
+		if len(got.frag.Sections) != 1 || got.frag.Sections[0].Kind != "server" {
+			t.Fatalf("sections = %+v, want one server section", got.frag.Sections)
+		}
+	})
+
+	t.Run("section form cancel", func(t *testing.T) {
+		m := configModel(t, forwardSection("192.0.2.53"))
+		m = openSpecialized(t, m, 0)
+		next, cmd := stepSpecialized(t, m, "esc")
+		if cmd == nil {
+			t.Fatal("esc produced no command")
+		}
+		cancel, ok := cmd().(FormCancelMsg)
+		if !ok {
+			t.Fatalf("esc produced %T, want FormCancelMsg", cmd())
+		}
+		got := asRoot(t, mustUpdate(t, next, cancel))
+		if got.state != StateReady {
+			t.Errorf("state = %v, want StateReady after cancel", got.state)
+		}
+	})
 }

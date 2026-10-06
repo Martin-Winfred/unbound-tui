@@ -302,7 +302,7 @@ func FindConflicts(f domain.Fragment, eff Effective, ownPath string) []Conflict 
 			continue
 		}
 		for _, o := range ours {
-			if o.kind == fs.Kind && strings.EqualFold(o.name, name) {
+			if o.kind == fs.Kind && domain.EqualName(o.name, name) {
 				out = append(out, Conflict{Kind: fs.Kind, Name: name, Source: fs.Source})
 				break
 			}

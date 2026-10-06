@@ -14,12 +14,12 @@ func TestSchemaFor(t *testing.T) {
 	}{
 		{"local-data is an RR line", "server", "local-data", TypeRR},
 		{"local-zone is a zone line", "server", "local-zone", TypeZone},
-		{"forward-zone name", "forward-zone", "name", TypeText},
+		{"forward-zone name", "forward-zone", "name", TypeZoneName},
 		{"forward-zone forward-addr", "forward-zone", "forward-addr", TypeUpstream},
 		{"forward-zone forward-host", "forward-zone", "forward-host", TypeHost},
 		{"forward-zone forward-tls-upstream", "forward-zone", "forward-tls-upstream", TypeBool},
 		{"forward-zone forward-first", "forward-zone", "forward-first", TypeBool},
-		{"stub-zone name", "stub-zone", "name", TypeText},
+		{"stub-zone name", "stub-zone", "name", TypeZoneName},
 		{"stub-zone stub-addr", "stub-zone", "stub-addr", TypeUpstream},
 		{"stub-zone stub-host", "stub-zone", "stub-host", TypeHost},
 		{"stub-zone stub-prime", "stub-zone", "stub-prime", TypeBool},
@@ -32,7 +32,7 @@ func TestSchemaFor(t *testing.T) {
 		{"server root-hints", "server", "root-hints", TypePath},
 		{"server access-control", "server", "access-control", TypeAccessCtrl},
 		{"remote-control control-enable", "remote-control", "control-enable", TypeBool},
-		{"remote-control control-interface", "remote-control", "control-interface", TypeAddr},
+		{"remote-control control-interface", "remote-control", "control-interface", TypeControlAddr},
 		{"remote-control control-port", "remote-control", "control-port", TypePort},
 		{"remote-control control-use-cert", "remote-control", "control-use-cert", TypeBool},
 		{"remote-control server-key-file", "remote-control", "server-key-file", TypePath},
@@ -81,17 +81,42 @@ func TestValidateValue(t *testing.T) {
 		{"path ok", TypePath, "/etc/ssl/certs", ""},
 		{"path empty", TypePath, "", "empty path"},
 		{"path control", TypePath, "a\x00b", "control"},
+		{"path quote", TypePath, `/tmp/a"b.conf`, "forbidden character"},
+		{"path semicolon", TypePath, "/tmp/a;b.conf", "forbidden character"},
+		{"path hash", TypePath, "/tmp/a#b.conf", "forbidden character"},
 
-		// address
-		{"addr ipv4", TypeAddr, "1.1.1.1", ""},
-		{"addr host", TypeAddr, "dns.example", ""},
-		{"addr ipv6 port", TypeAddr, "[2001:db8::1]:53", ""},
-		{"addr ipv4 port", TypeAddr, "1.1.1.1:5353", ""},
-		{"addr port zero", TypeAddr, "1.1.1.1:0", "invalid port"},
-		{"addr port too big", TypeAddr, "1.1.1.1:70000", "invalid port"},
-		{"addr port space", TypeAddr, "1.1.1.1: 853", "invalid port"},
+		// address: an IP literal or interface name, optional `@port`.
+		// `host:port` and `[v6]:port` are not unbound syntax.
+		{"addr ipv4", TypeAddr, "192.0.2.1", ""},
+		{"addr ipv6", TypeAddr, "2001:db8::1", ""},
+		{"addr interface name", TypeAddr, "eth0", ""},
+		{"addr dotted name", TypeAddr, "eth0.100", ""},
+		{"addr ipv4 port", TypeAddr, "192.0.2.1@5353", ""},
+		{"addr ipv6 port", TypeAddr, "2001:db8::1@53", ""},
+		{"addr port one", TypeAddr, "192.0.2.1@1", ""},
+		{"addr port max", TypeAddr, "192.0.2.1@65535", ""},
+		{"addr port zero", TypeAddr, "192.0.2.1@0", "invalid port"},
+		{"addr port too big", TypeAddr, "192.0.2.1@65536", "invalid port"},
+		{"addr port space", TypeAddr, "192.0.2.1@ 853", "invalid port"},
+		{"addr host port rejected", TypeAddr, "192.0.2.1:5353", "invalid address"},
+		{"addr bracketed v6 port rejected", TypeAddr, "[2001:db8::1]:5353", "invalid address"},
+		{"addr socket path rejected", TypeAddr, "/run/unbound.ctl", "invalid host"},
 		{"addr bad host", TypeAddr, "bad host", "invalid host"},
 		{"addr empty", TypeAddr, "", "empty address"},
+
+		// control-address: interface/IP[@port] plus an absolute Unix socket
+		// path (the Debian default control-interface).
+		{"control ipv4", TypeControlAddr, "192.0.2.1", ""},
+		{"control ipv4 port", TypeControlAddr, "192.0.2.1@5353", ""},
+		{"control ipv6 port", TypeControlAddr, "2001:db8::1@53", ""},
+		{"control interface name", TypeControlAddr, "eth0", ""},
+		{"control socket path", TypeControlAddr, "/run/unbound.ctl", ""},
+		{"control port zero", TypeControlAddr, "192.0.2.1@0", "invalid port"},
+		{"control port too big", TypeControlAddr, "192.0.2.1@65536", "invalid port"},
+		{"control host port rejected", TypeControlAddr, "192.0.2.1:5353", "invalid address"},
+		{"control bracketed v6 port rejected", TypeControlAddr, "[2001:db8::1]:5353", "invalid address"},
+		{"control relative path rejected", TypeControlAddr, "run/unbound.ctl", "invalid host"},
+		{"control empty", TypeControlAddr, "", "empty address"},
 
 		// cidr
 		{"cidr v4", TypeCIDR, "192.0.2.0/24", ""},
@@ -110,6 +135,19 @@ func TestValidateValue(t *testing.T) {
 		{"zone default type", TypeZone, `"example.com"`, ""},
 		{"zone bad type", TypeZone, `"example.com" bogus`, "unsupported zone type"},
 		{"zone bad name", TypeZone, `"bad name" static`, "invalid zone name"},
+
+		// zone name: the forward-zone/stub-zone `name` value, a single
+		// domain name with an optional surrounding quote pair, root "."
+		{"zone-name root", TypeZoneName, ".", ""},
+		{"zone-name quoted", TypeZoneName, `"example.com"`, ""},
+		{"zone-name quoted root", TypeZoneName, `"."`, ""},
+		{"zone-name unquoted", TypeZoneName, "example.com", ""},
+		{"zone-name empty", TypeZoneName, "", ""},
+		{"zone-name whitespace", TypeZoneName, "   ", ""},
+		{"zone-name lone quote", TypeZoneName, `"`, "invalid zone name"},
+		{"zone-name injection", TypeZoneName, `foo bar".`, "invalid label"},
+		{"zone-name directive", TypeZoneName, "x include: /tmp/e.conf", "invalid label"},
+		{"zone-name empty label", TypeZoneName, "a..b", "invalid label"},
 
 		// upstream: IP[@port][#auth]
 		{"upstream bare ipv4", TypeUpstream, "192.0.2.53", ""},
@@ -143,9 +181,11 @@ func TestValidateValue(t *testing.T) {
 		{"access-control refuse", TypeAccessCtrl, "192.0.2.0/24 refuse", ""},
 		{"access-control deny_non_local", TypeAccessCtrl, "192.0.2.0/24 deny_non_local", ""},
 		{"access-control refuse_non_local", TypeAccessCtrl, "192.0.2.0/24 refuse_non_local", ""},
-		{"access-control always_transparent", TypeAccessCtrl, "192.0.2.0/24 always_transparent", ""},
-		{"access-control always_refuse", TypeAccessCtrl, "192.0.2.0/24 always_refuse", ""},
-		{"access-control always_nxdomain", TypeAccessCtrl, "192.0.2.0/24 always_nxdomain", ""},
+		{"access-control always_transparent rejected", TypeAccessCtrl, "192.0.2.0/24 always_transparent", "invalid action"},
+		{"access-control always_refuse rejected", TypeAccessCtrl, "192.0.2.0/24 always_refuse", "invalid action"},
+		{"access-control always_nxdomain rejected", TypeAccessCtrl, "192.0.2.0/24 always_nxdomain", "invalid action"},
+		{"access-control allow_setrd", TypeAccessCtrl, "192.0.2.0/24 allow_setrd", ""},
+		{"access-control allow_cookie", TypeAccessCtrl, "192.0.2.0/24 allow_cookie", ""},
 		{"access-control host bits", TypeAccessCtrl, "192.0.2.1/24 allow", "host bits"},
 		{"access-control bad cidr", TypeAccessCtrl, "bad/24 allow", "invalid CIDR"},
 		{"access-control bad cidr names directive", TypeAccessCtrl, "bad/24 allow", "access-control: invalid CIDR"},
@@ -169,7 +209,12 @@ func TestValidateValue(t *testing.T) {
 
 		// text
 		{"text plain", TypeText, "hello world", ""},
-		{"text quotes and hash", TypeText, `a"b #c`, ""},
+		{"text quotes and hash", TypeText, `a"b #c`, "forbidden character"},
+		{"text double quote", TypeText, `a"b`, "forbidden character"},
+		{"text single quote", TypeText, "a'b", "forbidden character"},
+		{"text semicolon", TypeText, "a;b", "forbidden character"},
+		{"text hash", TypeText, "a#b", "forbidden character"},
+		{"text backslash", TypeText, `a\b`, "forbidden character"},
 		{"text empty", TypeText, "", ""},
 		{"text nul", TypeText, "a\x00b", "control"},
 		{"text del", TypeText, "a\x7fb", "control"},
@@ -214,6 +259,36 @@ func TestZoneTypeWhitelistAlignment(t *testing.T) {
 				t.Errorf("ValidateValue(TypeZone, %q) = %v, want nil", typ, err)
 			}
 		})
+	}
+}
+
+// TestAccessCtrlActionWhitelistAlignment pins that the accepted access-control
+// action set matches the canonical unbound.conf(5) set exactly, in both
+// directions. A canonical action the registry rejects would make the editor
+// refuse a value unbound loads; a registry entry outside the canonical set
+// (for example a local-zone type such as always_nxdomain) would let the editor
+// accept a value unbound rejects at reload.
+func TestAccessCtrlActionWhitelistAlignment(t *testing.T) {
+	canonical := []string{
+		"deny", "refuse", "allow", "allow_setrd",
+		"allow_snoop", "allow_cookie", "deny_non_local", "refuse_non_local",
+	}
+	inCanonical := make(map[string]bool, len(canonical))
+	for _, action := range canonical {
+		inCanonical[action] = true
+		t.Run(action, func(t *testing.T) {
+			if err := ValidateValue(TypeAccessCtrl, "192.0.2.0/24 "+action); err != nil {
+				t.Errorf("ValidateValue(TypeAccessCtrl, %q) = %v, want nil", action, err)
+			}
+		})
+	}
+	if len(accessCtrlActions) != len(canonical) {
+		t.Errorf("accessCtrlActions has %d entries, canonical unbound set has %d", len(accessCtrlActions), len(canonical))
+	}
+	for action := range accessCtrlActions {
+		if !inCanonical[action] {
+			t.Errorf("accessCtrlActions contains %q, which is not in the canonical unbound set", action)
+		}
 	}
 }
 

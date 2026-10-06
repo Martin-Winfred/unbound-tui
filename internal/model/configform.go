@@ -149,6 +149,8 @@ func schemaPlaceholder(t validate.Type) string {
 		return "53"
 	case validate.TypeAccessCtrl:
 		return "192.0.2.0/24 allow"
+	case validate.TypeControlAddr:
+		return "/run/unbound.ctl"
 	default: // TypeText and the empty Type
 		return "value"
 	}
@@ -205,6 +207,10 @@ func (f RecordForm) submitSection() (RecordForm, tea.Cmd) {
 		f.err = fmt.Errorf("invalid section kind %q", kind)
 		return f, nil
 	}
+	if namedSectionKinds[kind] && name == "" {
+		f.err = fmt.Errorf("name is required for %s sections", kind)
+		return f, nil
+	}
 	return f.emitConfig(ConfigFormSubmitMsg{Mode: FormAddSection, Kind: kind, Name: name})
 }
 
@@ -231,8 +237,8 @@ func (f RecordForm) submitEditEntry(ctx configFormCtx) (RecordForm, tea.Cmd) {
 }
 
 // entryValues reads and soft-checks the Key/Value fields: key shape first,
-// then the locked-key guard (local-* belongs to the Local data view), then the
-// schema value check.
+// then the locked-key guard (local-* belongs to the Local data view), then an
+// empty-value guard, then the schema value check.
 func (f RecordForm) entryValues(kind string) (key, value string, err error) {
 	key = strings.TrimSpace(f.inputs[0].Value())
 	value = strings.TrimSpace(f.inputs[1].Value())
@@ -241,6 +247,9 @@ func (f RecordForm) entryValues(kind string) (key, value string, err error) {
 	}
 	if isLocked(domain.Entry{Key: key}) {
 		return "", "", fmt.Errorf("managed in the Local data view")
+	}
+	if value == "" {
+		return "", "", fmt.Errorf("value is required for %q", key)
 	}
 	if err := validateEntryValue(kind, key, value); err != nil {
 		return "", "", err
@@ -279,8 +288,14 @@ func (m RootModel) applyConfigForm(msg ConfigFormSubmitMsg) (tea.Model, tea.Cmd)
 
 	switch msg.Mode {
 	case FormAddSection:
+		// A named section without a name is unparseable by unbound; submitSection
+		// refuses it, and this guard keeps a directly injected message from
+		// ever creating one.
+		if namedSectionKinds[msg.Kind] && msg.Name == "" {
+			return m, nil
+		}
 		sec := domain.Section{Kind: msg.Kind}
-		if namedSectionKinds[msg.Kind] && msg.Name != "" {
+		if namedSectionKinds[msg.Kind] {
 			sec.Entries = []domain.Entry{{Key: "name", Value: msg.Name}}
 		}
 		m.frag.Sections = append(m.frag.Sections, sec)

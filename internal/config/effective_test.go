@@ -557,6 +557,51 @@ func TestFindConflicts(t *testing.T) {
 		}
 	})
 
+	t.Run("trailing-dot variant conflicts", func(t *testing.T) {
+		f := domain.Fragment{Sections: []domain.Section{
+			{Kind: "forward-zone", Entries: []domain.Entry{
+				{Key: "name", Value: `"example.com"`},
+				{Key: "forward-addr", Value: "192.0.2.1"},
+			}},
+		}}
+		eff := Effective{Sections: []EffectiveSection{
+			{
+				Section: domain.Section{Kind: "forward-zone", Entries: []domain.Entry{
+					{Key: "name", Value: `"example.com."`},
+					{Key: "forward-addr", Value: "192.0.2.2"},
+				}},
+				Source: "/foreign.conf",
+			},
+		}}
+		got := FindConflicts(f, eff, "/ours.conf")
+		want := []Conflict{{Kind: "forward-zone", Name: "example.com.", Source: "/foreign.conf"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("FindConflicts() = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("non-ASCII long s does not fold to s", func(t *testing.T) {
+		f := domain.Fragment{Sections: []domain.Section{
+			{Kind: "forward-zone", Entries: []domain.Entry{
+				{Key: "name", Value: "\"\u017f.example\""},
+				{Key: "forward-addr", Value: "192.0.2.1"},
+			}},
+		}}
+		eff := Effective{Sections: []EffectiveSection{
+			{
+				Section: domain.Section{Kind: "forward-zone", Entries: []domain.Entry{
+					{Key: "name", Value: `"s.example"`},
+					{Key: "forward-addr", Value: "192.0.2.2"},
+				}},
+				Source: "/foreign.conf",
+			},
+		}}
+		got := FindConflicts(f, eff, "/ours.conf")
+		if len(got) != 0 {
+			t.Errorf("FindConflicts() = %+v, want none (ASCII-only folding)", got)
+		}
+	})
+
 	t.Run("multiple conflicts keep effective order", func(t *testing.T) {
 		ours := fixturePath(t, "conflict", "multi", "ours.conf")
 		fa := fixturePath(t, "conflict", "multi", "foreign-a.conf")

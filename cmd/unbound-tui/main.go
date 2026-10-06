@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -33,7 +35,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 	fragmentPath := fs.String("fragment", "", "override the fragment path (default: "+config.DefaultFragmentPath+")")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil // -h/-help: usage was printed, this is not a failure
+		}
 		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q; run 'unbound-tui -h' for usage", fs.Arg(0))
 	}
 	if *showVersion {
 		fmt.Fprintln(stdout, "unbound-tui", version)
@@ -63,6 +71,11 @@ func boot(configPath, fragmentPath string, stderr io.Writer) (domain.Controller,
 		return nil, nil, fmt.Errorf("config: %w", err)
 	}
 	if fragmentPath != "" {
+		if samePath(fragmentPath, configPath) {
+			return nil, nil, fmt.Errorf(
+				"fragment path %q resolves to the unbound config %q; refusing to edit the main config",
+				fragmentPath, configPath)
+		}
 		cfg.SetFragmentPath(fragmentPath)
 	}
 	ctl, err := unbound.NewClient(configPath)
@@ -76,4 +89,22 @@ func boot(configPath, fragmentPath string, stderr io.Writer) (domain.Controller,
 		fmt.Fprintln(stderr, "warning:", err)
 	}
 	return ctl, cfg, nil
+}
+
+// samePath reports whether two config paths denote the same file. It
+// compares cleaned absolute paths and, when both exist, their resolved
+// symlink targets. A path that does not exist yet compares only by its
+// absolute cleaned form, so a fresh fragment path never fails open.
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	if filepath.Clean(absA) == filepath.Clean(absB) {
+		return true
+	}
+	resA, errA := filepath.EvalSymlinks(absA)
+	resB, errB := filepath.EvalSymlinks(absB)
+	return errA == nil && errB == nil && resA == resB
 }

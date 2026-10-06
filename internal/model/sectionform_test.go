@@ -539,6 +539,81 @@ func TestSectionFormRequiresName(t *testing.T) {
 	}
 }
 
+// --- name is a zone name ---
+
+// TestSectionFormName pins that the specialized form's Name field is gated by
+// zone-name validation, not the looser generic text check: a name with an
+// empty label is rejected, injection characters are rejected, and the root
+// zone "." is accepted.
+func TestSectionFormName(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "injection rejected", input: `foo bar".`, wantErr: true},
+		{name: "empty label rejected", input: "a..b", wantErr: true},
+		{name: "regular name allowed", input: "example.com", wantErr: false},
+		{name: "root zone allowed", input: ".", wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := openSpecialized(t, configModel(t, forwardSection("192.0.2.53")), 0)
+			m.secForm.inputs[m.secForm.nameIdx].SetValue(tc.input)
+
+			next, cmd := stepSpecialized(t, m, "ctrl+s")
+			if tc.wantErr {
+				if cmd != nil {
+					t.Fatal("invalid name produced a submit command")
+				}
+				if next.secForm.err == nil {
+					t.Fatal("err = nil, want a zone-name validation error")
+				}
+				return
+			}
+			if cmd == nil {
+				t.Fatalf("submit produced no command; err = %v", next.secForm.err)
+			}
+			if _, ok := cmd().(SectionFormSubmitMsg); !ok {
+				t.Fatalf("submit produced %T, want SectionFormSubmitMsg", cmd())
+			}
+		})
+	}
+}
+
+// --- quoted legacy names ---
+
+// TestSectionFormAcceptsQuotedLegacyName pins that a legacy/hand-written
+// forward-zone or stub-zone whose name is stored quoted (for example the three
+// bytes quote dot quote, spelled "\".\"" in the fragment) can still be edited
+// and resubmitted. The specialized form validates through TypeZoneName, which
+// trims the surrounding quote pair before ValidateZoneName, but the stored
+// spelling is preserved byte-for-byte because only validation changed.
+func TestSectionFormAcceptsQuotedLegacyName(t *testing.T) {
+	const quotedRoot = `"."`
+	for _, kind := range []string{"forward-zone", "stub-zone"} {
+		t.Run(kind, func(t *testing.T) {
+			f := domain.Fragment{Sections: []domain.Section{{Kind: kind, Entries: []domain.Entry{
+				{Key: "name", Value: quotedRoot},
+				{Key: addrKeyFor(kind), Value: "192.0.2.53"},
+			}}}}
+			m := openSpecialized(t, configModel(t, f), 0)
+			if got := m.secForm.inputs[m.secForm.nameIdx].Value(); got != quotedRoot {
+				t.Fatalf("prefilled name = %q, want the raw quoted %q", got, quotedRoot)
+			}
+
+			next, cmd := stepSpecialized(t, m, "ctrl+s")
+			if cmd == nil {
+				t.Fatalf("quoted legacy name produced no command; err = %v", next.secForm.err)
+			}
+			got := asRoot(t, mustUpdate(t, next, cmd().(SectionFormSubmitMsg)))
+			if names := nameEntries(got.frag.Sections[0]); !reflect.DeepEqual(names, []string{quotedRoot}) {
+				t.Errorf("section name = %v, want the raw quoted %q preserved", names, quotedRoot)
+			}
+		})
+	}
+}
+
 // --- navigation ---
 
 func TestSectionFormKeyNavigation(t *testing.T) {

@@ -46,9 +46,10 @@ const maxTTL = 604800 // 7 days
 // only ever produced from records that passed this check. The gate is
 // deliberately tightened beyond unbound's own permissive parser — the owner
 // shape, injection characters and unknown record types are rejected here, and
-// the record type is matched case-insensitively. TTL, type and rdata are
-// validated by ValidateRRLine (the owner by validRecordName above), so a
-// record and the local-data line it renders to accept the same values.
+// the record type is matched case-insensitively. The owner shape is checked
+// here (validRecordName); TTL, type and rdata are validated by ValidateRRLine,
+// and both gates apply injectable(), so a record and the local-data line it
+// renders to accept the same values.
 func ValidateRecord(zone string, r domain.Record) error {
 	if err := ValidateZoneName(zone); err != nil {
 		return fmt.Errorf("zone: %w", err)
@@ -72,7 +73,10 @@ func ValidateRecord(zone string, r domain.Record) error {
 // missing. A single pair of surrounding double quotes is stripped first, since
 // the raw value of a local-data entry keeps them. The owner may be a relative
 // name (as accepted by ValidateRecord) or a fully-qualified name with a
-// trailing dot, as unbound writes it.
+// trailing dot, as unbound writes it. Like ValidateRecord, this gate applies
+// injectable() to the owner and to the joined rdata, so a value can never
+// smuggle a quote, backslash, control character, ';' or '#' into the written
+// line.
 func ValidateRRLine(line string) error {
 	line = strings.TrimSpace(line)
 	if len(line) >= 2 && line[0] == '"' && line[len(line)-1] == '"' {
@@ -94,7 +98,7 @@ func ValidateRRLine(line string) error {
 		return fmt.Errorf("ttl %d out of range [0, %d]", ttl, maxTTL)
 	}
 	i := 2
-	if strings.EqualFold(fields[i], "IN") {
+	if domain.FoldName(fields[i]) == "in" {
 		i++
 	}
 	if len(fields) < i+2 {
@@ -104,11 +108,18 @@ func ValidateRRLine(line string) error {
 	if !rtypeWhitelist[rtype] {
 		return fmt.Errorf("unsupported record type %q", rtype)
 	}
-	return validateValue(rtype, strings.Join(fields[i+1:], " "))
+	rdata := strings.Join(fields[i+1:], " ")
+	if injectable(owner) || injectable(rdata) {
+		return fmt.Errorf("record contains forbidden characters (quote/backslash/control/;/#)")
+	}
+	return validateValue(rtype, rdata)
 }
 
 // ValidateZoneName validates a zone name (an optional trailing dot is allowed).
 func ValidateZoneName(name string) error {
+	if name == "." {
+		return nil // the root zone
+	}
 	name = strings.TrimSuffix(name, ".")
 	if name == "" || len(name) > 253 {
 		return fmt.Errorf("invalid zone name length: %q", name)
@@ -191,21 +202,47 @@ func validateValue(rtype, value string) error {
 			return fmt.Errorf("TXT string exceeds 255 bytes")
 		}
 	case "MX":
-		var pref int
-		var host string
-		if n, err := fmt.Sscanf(value, "%d %s", &pref, &host); err != nil || n != 2 {
+		fields := strings.Fields(value)
+		if len(fields) != 2 {
 			return fmt.Errorf("invalid MX value %q (want \"<pref> <host>\")", value)
 		}
-		if err := ValidateZoneName(host); err != nil {
+		pref, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return fmt.Errorf("invalid MX value %q (want \"<pref> <host>\")", value)
+		}
+		if pref < 0 || pref > 65535 {
+			return fmt.Errorf("MX preference %d out of range [0, 65535]", pref)
+		}
+		if err := ValidateZoneName(fields[1]); err != nil {
 			return fmt.Errorf("invalid MX host: %w", err)
 		}
 	case "SRV":
-		var prio, weight, port int
-		var target string
-		if n, err := fmt.Sscanf(value, "%d %d %d %s", &prio, &weight, &port, &target); err != nil || n != 4 {
+		fields := strings.Fields(value)
+		if len(fields) != 4 {
 			return fmt.Errorf("invalid SRV value %q (want \"<prio> <weight> <port> <target>\")", value)
 		}
-		if err := ValidateZoneName(target); err != nil {
+		prio, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return fmt.Errorf("invalid SRV value %q (want \"<prio> <weight> <port> <target>\")", value)
+		}
+		weight, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return fmt.Errorf("invalid SRV value %q (want \"<prio> <weight> <port> <target>\")", value)
+		}
+		port, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return fmt.Errorf("invalid SRV value %q (want \"<prio> <weight> <port> <target>\")", value)
+		}
+		if prio < 0 || prio > 65535 {
+			return fmt.Errorf("SRV priority %d out of range [0, 65535]", prio)
+		}
+		if weight < 0 || weight > 65535 {
+			return fmt.Errorf("SRV weight %d out of range [0, 65535]", weight)
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("SRV port %d out of range [1, 65535]", port)
+		}
+		if err := ValidateZoneName(fields[3]); err != nil {
 			return fmt.Errorf("invalid SRV target: %w", err)
 		}
 	}

@@ -66,7 +66,6 @@ func TestConfigFormAddSectionSubmit(t *testing.T) {
 		wantName string // "" means no name entry at all
 	}{
 		{"named kind keeps the name", "forward-zone", ".", "."},
-		{"named kind with empty name is nameless", "view", "", ""},
 		{"unnamed kind drops the name", "server", "example.com", ""},
 	}
 	for _, tc := range cases {
@@ -139,6 +138,37 @@ func TestConfigFormAddSectionRejectsBadKind(t *testing.T) {
 	}
 	if len(next.frag.Sections) != before {
 		t.Error("rejected submit changed the fragment")
+	}
+}
+
+// TestConfigFormAddSectionRejectsNamedKindWithoutName pins the pre-write gate's
+// rule at the form boundary: a named section (forward-zone/stub-zone/view) must
+// carry a name, so an empty Name field is refused instead of silently creating
+// a nameless section that unbound cannot parse.
+func TestConfigFormAddSectionRejectsNamedKindWithoutName(t *testing.T) {
+	for _, kind := range []string{"forward-zone", "stub-zone", "view"} {
+		t.Run(kind, func(t *testing.T) {
+			m := configModel(t, domain.Fragment{})
+			before := len(m.frag.Sections)
+
+			m.openAddSectionForm()
+			m.form.inputs[0].SetValue(kind)
+			// Name field deliberately left empty.
+			next, cmd := submitFormKey(t, m, "ctrl+s")
+
+			if cmd != nil {
+				t.Fatalf("named kind %q without a name produced a submit command", kind)
+			}
+			if next.form.err == nil || !strings.Contains(next.form.err.Error(), "name is required") {
+				t.Errorf("err = %v, want a name-required error", next.form.err)
+			}
+			if next.state != StateForm {
+				t.Errorf("state = %v, want StateForm (form stays open)", next.state)
+			}
+			if len(next.frag.Sections) != before {
+				t.Error("rejected submit changed the fragment")
+			}
+		})
 	}
 }
 
@@ -244,6 +274,60 @@ func TestConfigFormAddEntryRejects(t *testing.T) {
 	}
 }
 
+// TestConfigFormRejectsEmptyEntryValue covers the submit path for +a/+e: an
+// empty or whitespace-only value must set f.err and emit no submission, since
+// an empty value serializes as `key: ` and reparses as a section header.
+func TestConfigFormRejectsEmptyEntryValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"whitespace only", "   "},
+		{"tab only", "\t"},
+	}
+	for _, tc := range cases {
+		t.Run("add "+tc.name, func(t *testing.T) {
+			m := configModel(t, lifecycleFixture())
+			before := m.frag
+
+			m.newEntryForm(0)
+			m.form.inputs[0].SetValue("forward-addr")
+			m.form.inputs[1].SetValue(tc.value)
+			next, cmd := submitFormKey(t, m, "ctrl+s")
+
+			if cmd != nil {
+				t.Fatal("empty value produced a submit command")
+			}
+			if next.form.err == nil || !strings.Contains(next.form.err.Error(), "value is required") {
+				t.Errorf("err = %v, want a value is required error", next.form.err)
+			}
+			if !reflect.DeepEqual(next.frag, before) {
+				t.Errorf("rejected submit changed the fragment: %+v", next.frag)
+			}
+		})
+
+		t.Run("edit "+tc.name, func(t *testing.T) {
+			m := configModel(t, lifecycleFixture())
+			before := m.frag
+
+			m.editEntryForm(0, 2, m.frag.Sections[0].Entries[2])
+			m.form.inputs[1].SetValue(tc.value)
+			next, cmd := submitFormKey(t, m, "ctrl+s")
+
+			if cmd != nil {
+				t.Fatal("empty value produced a submit command")
+			}
+			if next.form.err == nil || !strings.Contains(next.form.err.Error(), "value is required") {
+				t.Errorf("err = %v, want a value is required error", next.form.err)
+			}
+			if !reflect.DeepEqual(next.frag, before) {
+				t.Errorf("rejected submit changed the fragment: %+v", next.frag)
+			}
+		})
+	}
+}
+
 // TestValidateEntryValue pins the schema soft-check: a registered (kind,key)
 // runs the typed validator (even for a key the UI normally locks), a miss
 // falls back to the text rules (control characters only).
@@ -276,6 +360,7 @@ func TestSchemaPlaceholder(t *testing.T) {
 		{validate.TypeZone, `"example." transparent`},
 		{validate.TypePort, "53"},
 		{validate.TypeAccessCtrl, "192.0.2.0/24 allow"},
+		{validate.TypeControlAddr, "/run/unbound.ctl"},
 		{validate.TypeText, "value"},
 		{validate.Type(""), "value"},
 	}

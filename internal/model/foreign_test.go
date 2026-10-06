@@ -58,6 +58,52 @@ func TestRequestForeignLoadsAndCloses(t *testing.T) {
 	}
 }
 
+// TestForeignFetchLoadingFlag pins the explicit in-flight state: the flag is
+// set when the fetch is dispatched, the empty view says loading instead of the
+// terminal None message, and the flag is cleared on both a successful and a
+// failed fetch (the error path still renders).
+func TestForeignFetchLoadingFlag(t *testing.T) {
+	t.Run("set in flight and cleared on success", func(t *testing.T) {
+		m, ctl := newTestModel(t)
+		ctl.zones = []domain.LocalZone{{Name: "z.example.", Type: "static"}}
+		next, cmd := m.Update(key("f"))
+		root := asRoot(t, next)
+		if !root.foreign.loading {
+			t.Fatal("loading = false right after dispatch, want true")
+		}
+		if v := root.foreign.View(); !strings.Contains(v, "loading") {
+			t.Errorf("in-flight foreign view = %q, want a loading placeholder", v)
+		}
+		if cmd == nil {
+			t.Fatal("foreign request produced no command")
+		}
+		root = asRoot(t, mustUpdate(t, root, cmd()))
+		if root.foreign.loading {
+			t.Error("loading = true after ForeignLoadedMsg, want false")
+		}
+	})
+
+	t.Run("cleared on fetch error", func(t *testing.T) {
+		m, ctl := newTestModel(t)
+		ctl.zonesErr = fmt.Errorf("list zones: boom")
+		next, cmd := m.Update(key("f"))
+		root := asRoot(t, next)
+		if !root.foreign.loading {
+			t.Fatal("loading = false right after dispatch, want true")
+		}
+		if cmd == nil {
+			t.Fatal("foreign request produced no command")
+		}
+		root = asRoot(t, mustUpdate(t, root, cmd()))
+		if root.foreign.loading {
+			t.Error("loading = true after a failed fetch, want false")
+		}
+		if !strings.Contains(root.foreign.View(), "Error:") {
+			t.Errorf("failed fetch view missing the error path:\n%s", root.foreign.View())
+		}
+	})
+}
+
 func TestBuildUpstreamRows(t *testing.T) {
 	own := "/etc/unbound/unbound.conf.d/unbound-tui.conf"
 	active := []domain.Entry{

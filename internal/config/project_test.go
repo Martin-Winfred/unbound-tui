@@ -55,6 +55,60 @@ func TestZonesFromFragmentImplicitZone(t *testing.T) {
 	}
 }
 
+// TestZonesFromFragmentImplicitZoneDisabledOrder pins that an implicit
+// transparent zone is always active: the first uncovered record must not
+// donate its own disabled flag to the implicit zone, which would then disable
+// every later record. Both file orders of the same logical data must project
+// identically, and each record keeps its own flag.
+func TestZonesFromFragmentImplicitZoneDisabledOrder(t *testing.T) {
+	const (
+		activeLine   = "local-data: \"x.example. 300 IN A 192.0.2.1\"\n"
+		disabledLine = "# unbound-tui:disabled\n# local-data: \"x.example. 300 IN TXT keep\"\n"
+	)
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{"disabled first", "server:\n" + disabledLine + activeLine},
+		{"active first", "server:\n" + activeLine + disabledLine},
+	}
+	var want []domain.Zone
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			zones := project(t, tt.src)
+			if len(zones) != 1 || zones[0].Type != "transparent" || zones[0].Disabled {
+				t.Fatalf("zones = %+v, want one active transparent zone", zones)
+			}
+			if got := len(zones[0].Records); got != 2 {
+				t.Fatalf("records = %d, want 2 (A + TXT): a dropped record must not pass", got)
+			}
+			var sawA, sawTXT bool
+			for _, r := range zones[0].Records {
+				switch r.RType {
+				case "A":
+					sawA = true
+					if r.Disabled {
+						t.Errorf("active A record was marked disabled (file order changed semantics): %+v", r)
+					}
+				case "TXT":
+					sawTXT = true
+					if !r.Disabled {
+						t.Errorf("disabled TXT record lost its flag: %+v", r)
+					}
+				}
+			}
+			if !sawA || !sawTXT {
+				t.Errorf("records = %+v, want both an A and a TXT record", zones[0].Records)
+			}
+			if i == 0 {
+				want = zones
+			} else if !reflect.DeepEqual(want, zones) {
+				t.Errorf("disabled-first projection differs from active-first:\n%+v\n%+v", want, zones)
+			}
+		})
+	}
+}
+
 func TestZonesFromFragmentDisabled(t *testing.T) {
 	zones := project(t, `server:
 local-zone: "example.com." transparent
@@ -101,6 +155,25 @@ local-data: "a.b.example.com. 300 IN A 192.0.2.5"
 		},
 		{Name: "example.com.", Type: "transparent"},
 	}
+	if !reflect.DeepEqual(zones, want) {
+		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
+	}
+}
+
+// TestZonesFromFragmentRootZoneOwnsRecords pins the root-zone case: a declared
+// local-zone "." owns every name (unbound's parent-chain lookup bottoms out at
+// the root), so its local-data attaches to the root zone instead of springing
+// an implicit transparent zone of the record's own owner. The record's name is
+// relative to the root, i.e. the owner with its trailing root dot removed.
+func TestZonesFromFragmentRootZoneOwnsRecords(t *testing.T) {
+	zones := project(t, `server:
+local-zone: "." refuse
+local-data: "example.com. 300 IN A 1.2.3.4"
+`)
+	want := []domain.Zone{{
+		Name: ".", Type: "refuse",
+		Records: []domain.Record{{Name: "example.com", RType: "A", Value: "1.2.3.4", TTL: 300}},
+	}}
 	if !reflect.DeepEqual(zones, want) {
 		t.Errorf("ZonesFromFragment =\n%+v\nwant\n%+v", zones, want)
 	}
@@ -355,6 +428,74 @@ func TestZonesFromFragmentMalformedEntry(t *testing.T) {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not mention %q", err, want)
 				}
+			}
+		})
+	}
+}
+
+// projectErr parses src as a Fragment and projects it, returning the
+// projection error rather than failing the test, so error cases can assert on
+// the message.
+func projectErr(t *testing.T, src string) ([]domain.Zone, error) {
+	t.Helper()
+	f, err := parseFragment([]byte(src))
+	if err != nil {
+		t.Fatalf("parseFragment: %v", err)
+	}
+	return ZonesFromFragment(f)
+}
+
+// TestZonesFromFragmentRejectsUnitTTL pins architecture decision P2-4: a
+// TTL-position token that starts with an ASCII digit but is not a plain
+// integer (for example "2H" or "1h30m") is a projection error naming the
+// offending RR, never a silent fallback to the 3600 default. A token that does
+// not start with a digit is a record type, so the no-TTL default still holds.
+func TestZonesFromFragmentRejectsUnitTTL(t *testing.T) {
+	rejected := []struct {
+		name     string
+		rr       string
+		mentions []string
+	}{
+		{"unit ttl before IN", "x.example. 2H IN A 1.2.3.4", []string{"x.example.", "TTL"}},
+		{"unit ttl before type", "x.example. 2h A 1.2.3.4", []string{"x.example.", "TTL"}},
+		{"unit ttl after IN", "x.example. IN 1h30m A 1.2.3.4", []string{"x.example.", "TTL"}},
+		{"signed positive ttl before IN", "x.example. +300 IN A 1.2.3.4", []string{"x.example.", "TTL", "+300"}},
+		{"signed negative ttl before type", "x.example. -5 A 1.2.3.4", []string{"x.example.", "TTL", "-5"}},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := projectErr(t, "server:\nlocal-data: \""+tc.rr+"\"\n")
+			if err == nil {
+				t.Fatalf("projection of %q succeeded; want error", tc.rr)
+			}
+			for _, want := range tc.mentions {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+
+	accepted := []struct {
+		name string
+		rr   string
+		ttl  int
+	}{
+		{"plain ttl before IN", "x.example. 3600 IN A 1.2.3.4", 3600},
+		{"plain ttl after IN", "x.example. IN 300 A 1.2.3.4", 300},
+		{"no ttl defaults to 3600", "x.example. A 1.2.3.4", 3600},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			zones, err := projectErr(t, "server:\nlocal-data: \""+tc.rr+"\"\n")
+			if err != nil {
+				t.Fatalf("projection of %q: %v", tc.rr, err)
+			}
+			if len(zones) != 1 || len(zones[0].Records) != 1 {
+				t.Fatalf("zones = %+v, want one zone with one record", zones)
+			}
+			if got := zones[0].Records[0].TTL; got != tc.ttl {
+				t.Errorf("TTL = %d, want %d", got, tc.ttl)
 			}
 		})
 	}

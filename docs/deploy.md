@@ -46,9 +46,13 @@ include yourself:
 include: /etc/unbound/unbound.conf.d/unbound-tui.conf
 ```
 
-On start the tool reads the main config only to warn you when the fragment is
-not included (literal path or a matching glob); it never writes to the main
-config.
+On start the tool reads the main config to check that the fragment is included
+(a literal path or a matching glob); it never writes to the main config. If the
+main config does not include the fragment, **apply** is refused (with the fix in
+the status line) instead of writing the fragment and reloading a daemon that
+never saw it. The check inspects the main config only: a fragment included
+indirectly through another file is not detected, so the main config must include
+it directly.
 
 ## 4. Run
 
@@ -60,12 +64,16 @@ On start the tool:
 
 1. Parses its fragment into an in-memory section/entry model and projects the
    zone/record view from it (a missing file is treated as empty).
-2. Probes `unbound-control` (a warning, not fatal) and checks the include.
+2. Probes `unbound-control` (a warning, not fatal) and checks that the main
+   config directly includes the fragment.
 
 Edits are held in memory. Press `w` to **apply**: the model is validated, the
 fragment is rewritten atomically (temp file + fsync + rename), and
 `unbound-control reload` makes the daemon match the file. Quitting with unsaved
 changes asks for confirmation.
+
+Record TTLs are plain integers in seconds; a unit suffix (for example `1h`) is
+rejected, not interpreted, when the Local data view projects the fragment.
 
 ## 5. What the tool will and will not touch
 
@@ -150,6 +158,19 @@ GOOS=linux GOARCH=amd64 go build -o unbound-tui-linux-amd64 ./cmd/unbound-tui
 
 ## 9. Rollback
 
-1. Remove the `include:` line from the main config.
-2. `unbound-control reload`.
-3. Optionally delete the fragment file and the binary.
+Stop managing the fragment and let Unbound keep serving what remains. The steps
+depend on how the fragment was included.
+
+**Debian/Ubuntu (`include-toplevel`, no `include:` line).** Delete or rename the
+fragment, then reload:
+
+```sh
+sudo rm /etc/unbound/unbound.conf.d/unbound-tui.conf
+sudo unbound-control reload
+```
+
+**Manual `include:`.** Remove the `include:` line from the main config, then
+reload. With the line gone the tool refuses to apply — the main config no
+longer includes the fragment — so re-enabling it means adding the line back.
+
+In both cases the binary can be deleted afterwards. No other file is touched.

@@ -21,8 +21,11 @@ const (
 	TypeInt  Type = "int"
 	TypePath Type = "path"
 	TypeAddr Type = "address"
-	TypeCIDR Type = "cidr"
-	TypeRR   Type = "rr"
+	// TypeControlAddr is a control-interface value: an IP address or interface
+	// name with an optional `@port`, or an absolute Unix socket path.
+	TypeControlAddr Type = "control-address"
+	TypeCIDR        Type = "cidr"
+	TypeRR          Type = "rr"
 	// TypeZone is a `name [zone-type]` line, the raw value of a local-zone
 	// entry (for example `"example.com" static`).
 	TypeZone Type = "zone"
@@ -37,22 +40,27 @@ const (
 	TypeAccessCtrl Type = "access-control"
 	// TypePort is a bare TCP/UDP port number in [1, 65535].
 	TypePort Type = "port"
-	TypeText Type = "text"
+	// TypeZoneName is a single domain name with an optional surrounding
+	// quote pair; root `"."` (quoted or not) is accepted. It is the value of
+	// a forward-zone or stub-zone `name` entry.
+	TypeZoneName Type = "zone-name"
+	TypeText     Type = "text"
 )
 
 // accessCtrlActions is the set of actions unbound accepts in an
-// access-control value. It mirrors unbound.conf(5) and is pinned here because
-// validate must not import config.
+// access-control value. It mirrors unbound.conf(5) exactly and is pinned here
+// because validate must not import config. Note that the local-zone types
+// (always_transparent, always_refuse, always_nxdomain, ...) are NOT valid
+// access-control actions and must not be added here.
 var accessCtrlActions = map[string]bool{
-	"allow":              true,
-	"deny":               true,
-	"refuse":             true,
-	"allow_snoop":        true,
-	"deny_non_local":     true,
-	"refuse_non_local":   true,
-	"always_transparent": true,
-	"always_refuse":      true,
-	"always_nxdomain":    true,
+	"allow":            true,
+	"deny":             true,
+	"refuse":           true,
+	"allow_snoop":      true,
+	"allow_setrd":      true,
+	"allow_cookie":     true,
+	"deny_non_local":   true,
+	"refuse_non_local": true,
 }
 
 // schemaRegistry seeds the (section kind, entry key) -> Type map. It covers
@@ -72,7 +80,7 @@ var schemaRegistry = map[[2]string]Type{
 	{"server", "access-control"}:  TypeAccessCtrl,
 
 	{"remote-control", "control-enable"}:    TypeBool,
-	{"remote-control", "control-interface"}: TypeAddr,
+	{"remote-control", "control-interface"}: TypeControlAddr,
 	{"remote-control", "control-port"}:      TypePort,
 	{"remote-control", "control-use-cert"}:  TypeBool,
 	{"remote-control", "server-key-file"}:   TypePath,
@@ -80,13 +88,13 @@ var schemaRegistry = map[[2]string]Type{
 	{"remote-control", "control-key-file"}:  TypePath,
 	{"remote-control", "control-cert-file"}: TypePath,
 
-	{"forward-zone", "name"}:                 TypeText,
+	{"forward-zone", "name"}:                 TypeZoneName,
 	{"forward-zone", "forward-addr"}:         TypeUpstream,
 	{"forward-zone", "forward-host"}:         TypeHost,
 	{"forward-zone", "forward-tls-upstream"}: TypeBool,
 	{"forward-zone", "forward-first"}:        TypeBool,
 
-	{"stub-zone", "name"}:       TypeText,
+	{"stub-zone", "name"}:       TypeZoneName,
 	{"stub-zone", "stub-addr"}:  TypeUpstream,
 	{"stub-zone", "stub-host"}:  TypeHost,
 	{"stub-zone", "stub-prime"}: TypeBool,
@@ -104,8 +112,9 @@ func SchemaFor(kind, key string) Type {
 }
 
 // ValidateValue validates a value against its schema type. An empty or
-// unregistered Type is treated as TypeText: only control characters are
-// rejected.
+// unregistered Type is treated as TypeText, which rejects control characters
+// and the config delimiters (quote, backslash, ';' and '#'); a value can
+// therefore never smuggle a second directive past an unknown key.
 func ValidateValue(t Type, value string) error {
 	switch t {
 	case TypeBool:
@@ -116,6 +125,8 @@ func ValidateValue(t Type, value string) error {
 		return validatePath(value)
 	case TypeAddr:
 		return validateAddress(value)
+	case TypeControlAddr:
+		return validateControlAddr(value)
 	case TypeCIDR:
 		return validateCIDR(value)
 	case TypeRR:
@@ -130,6 +141,8 @@ func ValidateValue(t Type, value string) error {
 		return validateAccessCtrl(value)
 	case TypePort:
 		return validatePortValue(value)
+	case TypeZoneName:
+		return validateZoneNameValue(value)
 	default: // TypeText and the empty Type
 		return validateText(value)
 	}
@@ -158,45 +171,52 @@ func validatePath(value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("empty path")
 	}
+	if err := rejectDelimiters(value); err != nil {
+		return err
+	}
 	return checkControl(value)
 }
 
-// validateAddress accepts a bare host (hostname or IP literal), "host:port",
-// or "[ipv6]:port". A port, when present, must be in [1, 65535].
+// validateAddress accepts an `interface` value: an IP literal or an interface
+// name, with an optional `@port` suffix (port in [1, 65535]). The `host:port`
+// and `[v6]:port` spellings are not unbound syntax and are rejected: an IPv6
+// literal is matched whole (it contains colons), while any other colon or
+// bracket is refused.
 func validateAddress(value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return fmt.Errorf("empty address")
 	}
-	if strings.HasPrefix(value, "[") {
-		end := strings.IndexByte(value, ']')
-		if end < 0 {
-			return fmt.Errorf("invalid address %q: missing ']'", value)
+	host := value
+	if i := strings.LastIndexByte(value, '@'); i >= 0 {
+		host = value[:i]
+		if err := validatePort(value[i+1:], value, "address"); err != nil {
+			return err
 		}
-		addr, err := netip.ParseAddr(value[1:end])
-		if err != nil || !addr.Is6() {
-			return fmt.Errorf("invalid IPv6 address %q", value[1:end])
-		}
-		rest := value[end+1:]
-		if rest == "" {
-			return nil
-		}
-		if !strings.HasPrefix(rest, ":") {
-			return fmt.Errorf("invalid address %q", value)
-		}
-		return validatePort(rest[1:], value, "address")
 	}
-	if _, err := netip.ParseAddr(value); err == nil {
+	if host == "" {
+		return fmt.Errorf("invalid address %q: empty host", value)
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
 		return nil
 	}
-	host, port, hasPort := strings.Cut(value, ":")
-	if err := validateHost(host, value); err != nil {
-		return err
+	if strings.ContainsAny(host, ":[]") {
+		return fmt.Errorf("invalid address %q", value)
 	}
-	if hasPort {
-		return validatePort(port, value, "address")
+	return validateHost(host, value)
+}
+
+// validateControlAddr accepts a `control-interface` value: the same
+// interface/IP[@port] syntax as validateAddress, or an absolute Unix socket
+// path (Debian's default is `/run/unbound.ctl`). Paths stay exclusive to this
+// type so the generic address validator never lets a `server interface` be a
+// socket path.
+func validateControlAddr(value string) error {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "/") {
+		return validatePath(value)
 	}
-	return nil
+	return validateAddress(value)
 }
 
 func validateHost(host, whole string) error {
@@ -291,6 +311,25 @@ func validateZoneLine(value string) error {
 	return nil
 }
 
+// validateZoneNameValue validates a single domain name, the value of a
+// forward-zone or stub-zone `name` entry. The name may be wrapped in one
+// surrounding quote pair (legacy and hand-written spellings preserve those
+// bytes), which is trimmed with domain.NormalizeName — the single quote-trim
+// authority — before ValidateZoneName runs; the root zone "." (quoted or not)
+// is accepted. Empty and whitespace-only values pass here so the caller keeps
+// owning the required-name gate; a lone quote normalizes to empty and is
+// rejected rather than silently accepted.
+func validateZoneNameValue(value string) error {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	norm := domain.NormalizeName(value)
+	if norm == "" {
+		return fmt.Errorf("invalid zone name %q", value)
+	}
+	return ValidateZoneName(norm)
+}
+
 // validateUpstream validates an `ip[@port][#auth]` upstream address, the
 // value of a forward-addr or stub-addr entry. IPv6 literals contain colons,
 // so `#auth` is split off first and the optional port at the LAST `@`; the
@@ -356,7 +395,22 @@ func validateHostValue(value string) error {
 }
 
 func validateText(value string) error {
+	if err := rejectDelimiters(value); err != nil {
+		return err
+	}
 	return checkControl(value)
+}
+
+// rejectDelimiters rejects the characters that would let a value escape its
+// position and start a second directive: quotes, backslash, ';' and '#'.
+// unbound's lexer returns to the initial state after one value token, so a
+// value like `bob local-zone: "evil.org" static` would otherwise parse as
+// two directives.
+func rejectDelimiters(value string) error {
+	if strings.ContainsAny(value, "\"'\\;#") {
+		return fmt.Errorf("value contains a forbidden character (quote/backslash/;/#)")
+	}
+	return nil
 }
 
 // checkControl rejects any control character (including tab, CR, LF and DEL).

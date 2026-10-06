@@ -57,6 +57,10 @@ type ForeignModel struct {
 	err error
 	w   int
 	h   int
+
+	// loading is set while a fetch is in flight and cleared when its result
+	// arrives; the empty view shows a placeholder instead of "None" for it.
+	loading bool
 }
 
 func newForeignModel(zones []domain.LocalZone, rrs []string, err error) ForeignModel {
@@ -422,6 +426,9 @@ func (f ForeignModel) view(w, h int) string {
 		return indent(th.box.Render(fit("Error: "+f.err.Error(), min(w-8, 76))), 2)
 	}
 	if f.tab == 0 && len(f.all) == 0 {
+		if f.loading {
+			return th.dimStyle.Render(truncate("loading…", w))
+		}
 		return th.dimStyle.Render(truncate("None - Unbound serves only entries from our fragment.", w))
 	}
 
